@@ -29,6 +29,7 @@ service UnderhillDiag {
     rpc ReadFile(FileRequest) returns (google.protobuf.Empty);
     rpc DumpSavedState(google.protobuf.Empty) returns (DumpSavedStateResponse);
     rpc PacketCapture(NetworkPacketCaptureRequest) returns (NetworkPacketCaptureResponse);
+    rpc ModifyVpci(ModifyVpciRequest) returns (google.protobuf.Empty);
 }
 
 message ExecRequest {
@@ -101,6 +102,11 @@ message NetworkPacketCaptureRequest {
 
 message NetworkPacketCaptureResponse {
     uint32 num_streams = 1;
+}
+
+message ModifyVpciRequest {
+    string action = 1;
+    string bus_id = 2; // GUID
 }
 
 message CrashRequest {

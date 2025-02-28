@@ -33,6 +33,7 @@ profiler_worker = { workspace = true, optional = true }
 socket2.workspace = true
 safe_intrinsics.workspace = true
 hvdef.workspace = true
+guest_emulation_transport.workspace = true
 
 [features]
 profiler = ["dep:profiler_worker"]

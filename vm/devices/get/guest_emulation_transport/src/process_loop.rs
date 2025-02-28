@@ -100,6 +100,8 @@ pub(crate) enum FatalError {
     },
     #[error("received an `IGVM_ATTEST` response with no pending `IGVM_ATTEST` request")]
     NoPendingIgvmAttestRequest,
+    #[error("VPCI device control error")]
+    VpciDeviceControlError,
 }
 
 /// Validates the response packet received from the host. This function is only
@@ -490,6 +492,11 @@ pub(crate) struct ProcessLoop<T: RingMem> {
     #[inspect(skip)]
     guest_notification_responses:
         FuturesUnordered<Pin<Box<dyn Send + Future<Output = GuestNotificationResponse>>>>,
+
+    #[inspect(skip)]
+    vpci_device_control_requests: VecDeque<Pin<Box<dyn Future<Output = Result<(), FatalError>> + Send>>>,
+    #[inspect(skip)]
+    vpci_device_control_send: mesh::Sender<Vec<u8>>,
 }
 
 // Outbound channels that relay Guest Notifications to code outside the core GET
@@ -563,6 +570,7 @@ struct PipeChannels {
     response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     // This is None when a `HostRequestPipeAccess` has ownership for an IgvmAttest request.
     igvm_attest_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
+    vpci_device_control_response_message_recv: Arc<Mutex<Option<mesh::Receiver<Vec<u8>>>>>,
     message_send: mesh::Sender<WriteRequest>,
 }
 
@@ -658,6 +666,7 @@ impl<T: RingMem> ProcessLoop<T> {
     pub(crate) fn new(pipe: MessagePipe<T>) -> Self {
         let (read_send, read_recv) = mesh::channel();
         let (igvm_attest_read_send, igvm_attest_read_recv) = mesh::channel();
+        let (vpci_device_control_send, vpci_device_control_recv) = mesh::channel();
         let (write_send, write_recv) = mesh::channel();
 
         Self {
@@ -667,16 +676,21 @@ impl<T: RingMem> ProcessLoop<T> {
             vtl2_settings_buf: None,
             host_requests: Default::default(),
             igvm_attest_requests: Default::default(),
+            vpci_device_control_requests: Default::default(),
             pipe_channels: PipeChannels {
                 response_message_recv: Arc::new(Mutex::new(Some(read_recv))),
                 igvm_attest_response_message_recv: Arc::new(Mutex::new(Some(
                     igvm_attest_read_recv,
+                ))),
+                vpci_device_control_response_message_recv: Arc::new(Mutex::new(Some(
+                    vpci_device_control_recv,
                 ))),
                 message_send: write_send,
             },
             read_send,
             write_recv,
             igvm_attest_read_send,
+            vpci_device_control_send,
             guest_notification_listeners: GuestNotificationListeners {
                 generation_id: GuestNotificationSender::new(),
                 vtl2_settings: GuestNotificationSender::new(),
@@ -880,6 +894,18 @@ impl<T: RingMem> ProcessLoop<T> {
                 }
                 .map(Event::Failure);
 
+                let run_next_vpci_device_control = async {
+                    while let Some(request) = self.vpci_device_control_requests.front_mut() {
+                        if let Err(e) = request.as_mut().await {
+                            return e;
+                        }
+
+                        self.vpci_device_control_requests.pop_front();
+                    }
+                    pending().await
+                }
+                .map(Event::Failure);
+
                 let recv_response = async {
                     if self.guest_notification_responses.is_empty() {
                         pending().await
@@ -896,6 +922,7 @@ impl<T: RingMem> ProcessLoop<T> {
                     send_next,
                     run_next,
                     run_next_igvm_attest,
+                    run_next_vpci_device_control,
                     recv_response,
                 )
                     .race()
@@ -985,6 +1012,17 @@ impl<T: RingMem> ProcessLoop<T> {
         let message_send = self.pipe_channels.message_send.clone();
         let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
         self.igvm_attest_requests.push_back(Box::pin(fut));
+    }
+
+    fn push_vpci_device_control_request_handler<F, Fut>(&mut self, f: F)
+    where
+        F: 'static + Send + FnOnce(HostRequestPipeAccess) -> Fut,
+        Fut: 'static + Future<Output = Result<(), FatalError>> + Send,
+    {
+        let message_recv_mutex = self.pipe_channels.vpci_device_control_response_message_recv.clone();
+        let message_send = self.pipe_channels.message_send.clone();
+        let fut = async { f(HostRequestPipeAccess::new(message_recv_mutex, message_send)).await };
+        self.vpci_device_control_requests.push_back(Box::pin(fut));
     }
 
     /// Pushes a host request handler that sends a single host request and waits
@@ -1119,9 +1157,17 @@ impl<T: RingMem> ProcessLoop<T> {
                 });
             }
             Msg::VpciDeviceControl(req) => {
-                self.push_basic_host_request_handler(req, |input| {
-                    get_protocol::VpciDeviceControlRequest::new(input.code, input.bus_instance_id)
+                self.push_vpci_device_control_request_handler(|access| {
+                    req.handle_must_succeed(|input| {
+                        request_vpci_device_control(access, input)
+                    })
+                    //req.handle_must_succeed(|request| {
+                    //    request_igvm_attest(access, *request, shared_pool_allocator)
+                    //})
                 });
+                //self.push_basic_host_request_handler(req, |input| {
+                //    get_protocol::VpciDeviceControlRequest::new(input.code, input.bus_instance_id)
+                //});
             }
             Msg::VpciDeviceBindingChange(req) => {
                 self.push_basic_host_request_handler(req, |input| {
@@ -1292,7 +1338,9 @@ impl<T: RingMem> ProcessLoop<T> {
         header: get_protocol::HeaderHostResponse,
         buf: &[u8],
     ) -> Result<(), FatalError> {
-        if self.host_requests.is_empty() && self.igvm_attest_requests.is_empty() {
+        if self.host_requests.is_empty()
+            && self.igvm_attest_requests.is_empty()
+            && self.vpci_device_control_requests.is_empty() {
             return Err(FatalError::NoPendingRequest);
         }
         validate_response(header)?;
@@ -1303,6 +1351,14 @@ impl<T: RingMem> ProcessLoop<T> {
                 return Ok(());
             }
             return Err(FatalError::NoPendingIgvmAttestRequest);
+        }
+
+        if header.message_id == HostRequests::VPCI_DEVICE_CONTROL {
+            if !self.vpci_device_control_requests.is_empty() {
+                self.vpci_device_control_send.send(buf.to_vec());
+                return Ok(());
+            }
+            return Err(FatalError::VpciDeviceControlError);
         }
 
         self.read_send.send(buf.to_vec());
@@ -1882,6 +1938,30 @@ async fn request_igvm_attest(
     buffer.truncate(response_length);
 
     Ok(Ok(buffer))
+}
+
+async fn request_vpci_device_control(
+    mut access: HostRequestPipeAccess,
+    request: msg::VpciDeviceControlInput,
+) -> Result<get_protocol::VpciDeviceControlResponse, FatalError> {
+    let request = get_protocol::VpciDeviceControlRequest::new(
+        request.code, request.bus_instance_id);
+
+    access.send_message(request.as_bytes().to_vec());
+
+    let response = access.recv_response().await;
+
+    // Validate the response and returns the validated data.
+    // TODO: zerocopy: use error here, use rest of range (https://github.com/microsoft/openvmm/issues/759)
+    let Ok((response, _)) = get_protocol::VpciDeviceControlResponse::read_from_prefix(&response) else {
+        Err(FatalError::VpciDeviceControlError)?
+    };
+
+    if response.status != get_protocol::VpciDeviceControlStatus::SUCCESS {
+        return Err(FatalError::VpciDeviceControlError);
+    }
+
+    Ok(response)
 }
 
 /// Prepare the `IgvmAttest` request.

@@ -66,6 +66,7 @@ use std::os::unix::fs::FileTypeExt;
 use std::os::unix::prelude::*;
 use std::process::ExitStatus;
 use std::sync::Arc;
+use guest_emulation_transport::ModifyVpciParams;
 
 /// A diagnostics request.
 #[derive(Debug, mesh::MeshPayload)]
@@ -89,6 +90,8 @@ pub enum DiagRequest {
     /// Profile VTL2
     #[cfg(feature = "profiler")]
     Profile(FailableRpc<profiler_worker::ProfilerRequest, ()>),
+    /// Modify VPCI state
+    ModifyVpci(FailableRpc<ModifyVpciParams, ()>),
 }
 
 /// Additional parameters provided as part of a delayed start request.
@@ -239,6 +242,9 @@ impl DiagServiceHandler {
             }
             UnderhillDiag::DumpSavedState((), response) => response.send(grpc_result(
                 ctx.until_cancelled(self.handle_dump_saved_state()).await,
+            )),
+            UnderhillDiag::ModifyVpci(request, response) => response.send(grpc_result(
+                ctx.until_cancelled(self.handle_modify_vpci(request)).await,
             )),
         }
     }
@@ -737,6 +743,17 @@ impl DiagServiceHandler {
             .await?;
 
         Ok(diag_proto::DumpSavedStateResponse { data })
+    }
+
+    async fn handle_modify_vpci(&self, request: diag_proto::ModifyVpciRequest) -> anyhow::Result<()> {
+        self.request_send
+            .call_failable(DiagRequest::ModifyVpci, ModifyVpciParams {
+                action: request.action,
+                bus_id: request.bus_id,
+            })
+            .await?;
+
+        Ok(())
     }
 }
 

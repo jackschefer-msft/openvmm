@@ -28,6 +28,7 @@ use futures::StreamExt;
 use futures_concurrency::future::Join;
 use get_protocol::SaveGuestVtl2StateFlags;
 use guest_emulation_transport::api::GuestSaveRequest;
+use guest_emulation_transport::ModifyVpciParams;
 use guid::Guid;
 use hyperv_ic_resources::shutdown::ShutdownParams;
 use hyperv_ic_resources::shutdown::ShutdownResult;
@@ -80,6 +81,7 @@ pub enum UhVmRpc {
     Save(FailableRpc<(), Vec<u8>>),
     ClearHalt(Rpc<(), bool>), // TODO: remove this, and use DebugRequest::Resume
     PacketCapture(FailableRpc<PacketCaptureParams<Socket>, PacketCaptureParams<Socket>>),
+    ModifyVpci(FailableRpc<ModifyVpciParams, ()>),
 }
 
 #[async_trait]
@@ -350,6 +352,13 @@ impl LoadedVm {
                                 .as_ref()
                                 .context("No network settings have been set up")?;
                             network_settings.packet_capture(params).await
+                        })
+                        .await
+                    }
+                    UhVmRpc::ModifyVpci(rpc) => {
+                        rpc.handle_failable(|params| async {
+                            self.get_client.modify_vpci(params.action, params.bus_id)
+                            .await
                         })
                         .await
                     }

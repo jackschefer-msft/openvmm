@@ -17,6 +17,15 @@ use user_driver::DmaClient;
 use vpci::bus_control::VpciBusEvent;
 use zerocopy::IntoBytes;
 
+/// Additional parameters provided as part of a VPCI modification request
+#[derive(Debug, mesh::MeshPayload)]
+pub struct ModifyVpciParams {
+    /// action to take on the thing
+    pub action: String,
+    /// bus to do the thing
+    pub bus_id: String,
+}
+
 /// Guest-side client for the GET.
 ///
 /// A new client is created from [`spawn_get_worker`](crate::spawn_get_worker),
@@ -111,6 +120,17 @@ impl GuestEmulationTransportClient {
             )
             .await
             .map_err(|e| crate::error::VmgsIoError(e.status))
+    }
+
+    /// Backchannel for testcode to modify VPCI state of the GET
+    pub async fn modify_vpci(&self, action: String, bus_id: String) -> Result<(), crate::error::VpciControlError>
+    {
+        let bus_guid = bus_id.parse().unwrap(); // bogusly assume valid guid
+        match action.as_str() {
+            "offer" => { self.offer_vpci_device(bus_guid).await },
+            "revoke" => { self.revoke_vpci_device(bus_guid).await },
+            &_ => todo!()
+        }
     }
 
     /// Sends a VMGS write request over the GET device

@@ -36,6 +36,7 @@ use thiserror::Error;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use unicycle::FuturesUnordered;
+use guid::Guid;
 
 #[derive(Parser)]
 #[clap(about = "(dev) CLI to interact with the Underhill diagnostics server")]
@@ -278,6 +279,15 @@ enum Command {
         /// Length of the packet to capture.
         #[clap(short('s'), long, default_value = "65535", value_parser = clap::value_parser!(u16).range(1..))]
         snaplen: u16,
+    },
+    /// VPCI commands
+    Vpci {
+        /// Action (offer, revoke, ackbind, ackunbind)
+        action: String,
+        /// For offer/revoke, the GUID representing a VTL0 assigned VPCI device
+        /// For ackbind/ackunbind, the GUID representing a VTL2 assigned VPCI device
+        #[clap(value_parser = |arg: &str| -> Result<Guid, guid::ParseError> {Ok(arg.parse()?) })]
+        bus_id: Guid,
     },
 }
 
@@ -870,6 +880,11 @@ pub fn main() -> anyhow::Result<()> {
                 let client = new_client(driver.clone(), &vm)?;
                 let mut file = create_or_stderr(&output)?;
                 file.write_all(&client.dump_saved_state().await?)?;
+            }
+            Command::Vpci { action, bus_id } => {
+                println!("VPCI action {} on bus ID {}", action, bus_id);
+                let client = new_client(driver.clone(), &vm)?;
+                client.modify_vpci(action, bus_id).await?;
             }
         }
         Ok(())

@@ -693,6 +693,16 @@ async fn run_control(
                             })
                             .detach();
                     }
+                    diag_server::DiagRequest::ModifyVpci(rpc) => {
+                        let Some(workers) = &mut workers else {
+                            rpc.complete(Err(RemoteError::new(anyhow::anyhow!(
+                                "worker has not been started yet"
+                            ))));
+                            continue;
+                        };
+
+                        workers.vm_rpc.send(UhVmRpc::ModifyVpci(rpc));
+                    }
                 }
             }
             Event::Worker(event) => match event {

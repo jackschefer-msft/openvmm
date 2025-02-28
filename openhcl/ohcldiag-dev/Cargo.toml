@@ -27,6 +27,7 @@ socket2.workspace = true
 thiserror.workspace = true
 tracing-subscriber = { workspace = true, features = ["env-filter"] }
 unicycle.workspace = true
+guid.workspace = true
 
 [lints]
 workspace = true

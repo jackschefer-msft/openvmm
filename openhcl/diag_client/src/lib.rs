@@ -772,6 +772,21 @@ impl DiagClient {
 
         Ok(state.data)
     }
+
+    /// Sends a VPCI modification command
+    pub async fn modify_vpci(&self, action: String, bus_id: guid::Guid) -> anyhow::Result<()> {
+        self.ttrpc
+            .call()
+            .start(diag_proto::UnderhillDiag::ModifyVpci,
+                diag_proto::ModifyVpciRequest {
+                action: action,
+                bus_id: bus_id.to_string()
+            })
+            .await
+            .map_err(grpc_status)?;
+
+        Ok(())
+    }
 }
 
 fn grpc_status(status: Status) -> anyhow::Error {

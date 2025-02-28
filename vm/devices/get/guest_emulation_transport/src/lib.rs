@@ -21,6 +21,7 @@ mod process_loop;
 mod worker;
 
 pub use client::GuestEmulationTransportClient;
+pub use client::ModifyVpciParams;
 
 /// Error while initialize the GET worker
 #[derive(Debug, thiserror::Error)]
