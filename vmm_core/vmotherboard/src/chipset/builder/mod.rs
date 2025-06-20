@@ -12,9 +12,13 @@ use super::backing::arc_mutex::device::ArcMutexChipsetDeviceBuilder;
 use super::backing::arc_mutex::pci::BusResolverWeakMutexPci;
 use super::backing::arc_mutex::pci::RegisterWeakMutexPci;
 use super::backing::arc_mutex::pci::WeakMutexPciEntry;
+use super::backing::arc_mutex::pci::BusResolverWeakMutexPcie;
+use super::backing::arc_mutex::pci::RegisterWeakMutexPcie;
+use super::backing::arc_mutex::pci::WeakMutexPcieEntry;
 use super::backing::arc_mutex::services::ArcMutexChipsetServices;
 use super::backing::arc_mutex::state_unit::ArcMutexChipsetDeviceUnit;
 use crate::BusIdPci;
+use crate::BusIdPcie;
 use crate::DebugEventHandler;
 use crate::VmmChipsetDevice;
 use crate::chipset::Chipset;
@@ -55,6 +59,7 @@ impl ChipsetDevices {
 #[derive(Default)]
 pub(crate) struct BusResolver {
     pci: BusResolverWeakMutexPci,
+    pcie: BusResolverWeakMutexPcie,
 }
 
 /// A builder for [`Chipset`]
@@ -156,6 +161,35 @@ impl<'a> ChipsetBuilder<'a> {
             .push(WeakMutexPciEntry { bdf, name, dev });
     }
 
+    pub(crate) fn register_weak_mutex_pcie_segment(
+        &mut self,
+        bus_id: BusIdPcie,
+        segment: Box<dyn RegisterWeakMutexPcie>,
+    ) {
+        tracing::info!("register weak mutex pcie segment");
+        let existing = self.bus_resolver.pcie.segments.insert(bus_id.clone(), segment);
+        assert!(
+            existing.is_none(),
+            "shouldn't be possible to have duplicate bus IDs: {:?}",
+            bus_id
+        )
+    }
+
+    pub(crate) fn register_weak_mutex_pcie_endpoint(
+        &mut self,
+        bus_id: BusIdPcie,
+        bdf: (u8, u8, u8),
+        name: Arc<str>,
+        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ) {
+        self.bus_resolver
+            .pcie
+            .endpoints
+            .entry(bus_id)
+            .or_default()
+            .push(WeakMutexPcieEntry { bdf, name, dev });
+    }
+
     pub(crate) fn line_set(
         &mut self,
         id: LineSetId,
@@ -211,9 +245,18 @@ impl<'a> ChipsetBuilder<'a> {
         }
 
         {
-            let BusResolver { pci } = self.bus_resolver;
+            let BusResolver { pci, pcie } = self.bus_resolver;
 
             match pci.resolve() {
+                Ok(()) => {}
+                Err(conflicts) => {
+                    for conflict in conflicts {
+                        errs.append(ChipsetBuilderError::PciConflict(conflict));
+                    }
+                }
+            }
+
+            match pcie.resolve() {
                 Ok(()) => {}
                 Err(conflicts) => {
                     for conflict in conflicts {

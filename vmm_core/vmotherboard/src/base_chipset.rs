@@ -207,6 +207,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_generic_isa_dma,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
+            deps_generic_pcie_segment,
             deps_generic_pic,
             deps_generic_pit,
             deps_generic_psp: _, // not actually a device... yet
@@ -268,6 +269,23 @@ impl<'a> BaseChipsetBuilder<'a> {
             })?;
 
             builder.register_weak_mutex_pci_bus(bus_id, Box::new(pci));
+        }
+
+        if let Some(options::dev::GenericPcieSegmentDeps {
+            bus_id,
+            segment_id,
+            start_bus,
+            bus_count,
+            ecam_address
+        }) = deps_generic_pcie_segment
+        {
+            let pcie = builder.arc_mutex_device("pcie").add(|services| {
+                // TODO: Move to pcie crate?
+                pci_bus::GenericPcieSegment::new(
+                    &mut services.register_mmio(), segment_id, start_bus, bus_count, ecam_address)
+            })?;
+
+            builder.register_weak_mutex_pcie_segment(bus_id, Box::new(pcie));
         }
 
         if let Some(options::dev::Piix4PciBusDeps { bus_id }) = deps_piix4_pci_bus {
@@ -796,6 +814,7 @@ mod weak_mutex_pci {
     use crate::chipset::PciConflict;
     use crate::chipset::PciConflictReason;
     use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
+    use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPcie;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
@@ -808,6 +827,34 @@ mod weak_mutex_pci {
     pub struct WeakMutexPciDeviceWrapper(Weak<CloseableMutex<dyn ChipsetDevice>>);
 
     impl GenericPciBusDevice for WeakMutexPciDeviceWrapper {
+        fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
+            Some(
+                self.0
+                    .upgrade()?
+                    .lock()
+                    .supports_pci()
+                    .expect("builder code ensures supports_pci.is_some()")
+                    .pci_cfg_read(offset, value),
+            )
+        }
+
+        fn pci_cfg_write(&mut self, offset: u16, value: u32) -> Option<IoResult> {
+            Some(
+                self.0
+                    .upgrade()?
+                    .lock()
+                    .supports_pci()
+                    .expect("builder code ensures supports_pci.is_some()")
+                    .pci_cfg_write(offset, value),
+            )
+        }
+    }
+
+    /// Wrapper around `Weak<CloseableMutex<dyn ChipsetDevice>>` that implements
+    /// [`GenericPciBusDevice`]
+    pub struct WeakMutexPcieDeviceWrapper(Weak<CloseableMutex<dyn ChipsetDevice>>);
+
+    impl GenericPciBusDevice for WeakMutexPcieDeviceWrapper {
         fn pci_cfg_read(&mut self, offset: u16, value: &mut u32) -> Option<IoResult> {
             Some(
                 self.0
@@ -845,6 +892,32 @@ mod weak_mutex_pci {
                 .add_pci_device(
                     bus,
                     device,
+                    function,
+                    name.clone(),
+                    WeakMutexPciDeviceWrapper(dev),
+                )
+                .map_err(|(_, existing_dev)| PciConflict {
+                    bdf: (bus, device, function),
+                    reason: PciConflictReason::ExistingDev(existing_dev),
+                    conflict_dev: name,
+                })
+        }
+    }
+
+    // wiring to enable using the generic PCIe segment alongside the Arc+CloseableMutex device infra
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pci_bus::GenericPcieSegment>> {
+        fn add_endpoint(
+            &mut self,
+            bus: u8,
+            device: u8,
+            function: u8,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PciConflict> {
+            self.lock()
+                .add_endpoint(
+                    bus,
+                    // TODO: combine device and function to device_function
                     function,
                     name.clone(),
                     WeakMutexPciDeviceWrapper(dev),
@@ -1047,6 +1120,7 @@ pub mod options {
             generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
+            generic_pcie_segment:        dev::GenericPcieSegmentDeps,
             generic_pic:                 dev::GenericPicDeps,
             generic_pit:                 dev::GenericPitDeps,
             generic_psp:                 dev::GenericPspDeps,
@@ -1078,6 +1152,7 @@ pub mod options {
     pub mod dev {
         use super::*;
         use crate::BusIdPci;
+        use crate::BusIdPcie;
         use chipset_resources::battery::HostBatteryUpdate;
         use local_clock::InspectableLocalClock;
 
@@ -1206,6 +1281,20 @@ pub mod options {
             pub pio_addr: u16,
             /// Port io address of the 32-bit PCI DATA register
             pub pio_data: u16,
+        }
+
+        /// Generic PCIe segment
+        pub struct GenericPcieSegmentDeps {
+            /// `vmotherboard` bus identifier
+            pub bus_id: BusIdPcie,
+            /// Segment identifier
+            pub segment_id: u16,
+            /// First valid bus number on this segment
+            pub start_bus: u8,
+            /// Count of valid bus numbers, starting at `start_bus`
+            pub bus_count: u8,
+            /// MMIO address of the ECAM for this segment
+            pub ecam_address: u64
         }
 
         /// PIIX4 PCI Bus

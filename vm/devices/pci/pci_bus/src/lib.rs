@@ -25,6 +25,9 @@ use chipset_device::io::deferred::DeferredToken;
 use chipset_device::io::deferred::DeferredWrite;
 use chipset_device::io::deferred::defer_read;
 use chipset_device::io::deferred::defer_write;
+use chipset_device::mmio::ControlMmioIntercept;
+use chipset_device::mmio::MmioIntercept;
+use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
@@ -679,6 +682,383 @@ impl core::fmt::Display for AddressRegister {
     }
 }
 
+/// PCIe Requestor ID
+#[derive(Debug, Copy, Clone, PartialEq, Eq, PartialOrd, Ord, Inspect)]
+#[inspect(display)]
+struct PcieRid {
+    segment: u16,
+    bus: u8,
+    device_function: u8
+}
+
+impl std::fmt::Display for PcieRid {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Use standard-ish SBDF notation (ssss:bb:dd.f).
+        let device = (self.device_function >> 3) & 0b11111;
+        let function = self.device_function & 0b111;
+        write!(
+            f,
+            "{:04x}:{:02x}:{:02x}.{:x}",
+            self.segment, self.bus, device, function
+        )
+    }
+}
+
+/// A generic PCIe segment.
+#[derive(InspectMut)]
+pub struct GenericPcieSegment {
+    // Segment identifier
+    segment_id: u16,
+
+    // First valid bus number
+    start_bus: u8,
+    // Count of valid bus numbers
+    bus_count: u8,
+
+    // ECAM intercept
+    ecam: Box<dyn ControlMmioIntercept>,
+
+    #[inspect(with = "|x| inspect::iter_by_key(x).map_value(|(name, _)| name)")]
+    devices: BTreeMap<PcieRid, (Arc<str>, Box<dyn GenericPciBusDevice>)>,
+
+    // Not really sure what this means
+    // Async bookkeeping
+    //#[inspect(with = "|x| x.is_some()")]
+    //waker: Option<std::task::Waker>,
+    //deferred_action: Option<DeferredAction>,
+}
+
+impl GenericPcieSegment {
+    /// Create a new [`GenericPcieSegment`] with the specified configuration.
+    pub fn new(
+        register_mmio: &mut dyn RegisterMmioIntercept,
+        segment_id: u16,
+        start_bus: u8,
+        bus_count: u8,
+        ecam_address: u64
+    ) -> GenericPcieSegment {
+        tracing::info!("new pcie segment: id = {}, start_bus = {}, bus_count = {}",
+            segment_id, start_bus, bus_count);
+
+        // Need 4K per possible device per bus
+        let ecam_size = 0x1000u64 * (bus_count as u64) * 255;
+        tracing::info!("register ECAM intercept: address = 0x{:x}, size = 0x{:x}",
+            ecam_address, ecam_size);
+
+        let mut ecam_control = register_mmio.new_io_region("ecam", ecam_size);
+        ecam_control.map(ecam_address);
+        GenericPcieSegment {
+            segment_id,
+            start_bus,
+            bus_count,
+            ecam: ecam_control,
+            devices: BTreeMap::new(),
+
+            //waker: None,
+            //deferred_action: None,
+        }
+    }
+
+    /// Try to add a PCIe device, returning (device, existing_device_name) if the
+    /// slot is already occupied.
+    pub fn add_endpoint<D: GenericPciBusDevice>(
+        &mut self,
+        bus: u8,
+        device_function: u8,
+        name: impl AsRef<str>,
+        dev: D,
+    ) -> Result<(), (D, Arc<str>)> {
+        let key = PcieRid {
+            segment: self.segment_id,
+            bus,
+            device_function,
+        };
+
+        tracing::info!("adding pcie device {}", key);
+        if let Some((name, _)) = self.devices.get(&key) {
+            return Err((dev, name.clone()));
+        }
+
+        self.devices.insert(key, (name.as_ref().into(), Box::new(dev)));
+        Ok(())
+    }
+
+    ///// Handle a read from the ADDR register
+    //fn handle_addr_read(&self, value: &mut u32) -> IoResult {
+    //    *value = self.state.pio_addr_reg.0;
+    //    IoResult::Ok
+    //}
+
+    ///// Handle a write to the ADDR register
+    //fn handle_addr_write(&mut self, addr: u32) -> IoResult {
+    //    let addr_fixup = {
+    //        let mut addr = AddressRegister(addr);
+    //        addr.fixup();
+    //        addr
+    //    };
+
+    //    self.state.pio_addr_reg = addr_fixup;
+    //    IoResult::Ok
+    //}
+
+    ///// Handle a read from the DATA register
+    //fn handle_data_read(&mut self, value: &mut u32) -> IoResult {
+    //    tracing::trace!(%self.state.pio_addr_reg, "data read");
+
+    //    if !self.state.pio_addr_reg.enabled() {
+    //        tracelimit::warn_ratelimited!("addr enable bit is set to disabled");
+    //        *value = !0;
+    //        return IoResult::Ok;
+    //    }
+
+    //    let address = self.state.pio_addr_reg.address();
+
+    //    match self.pci_devices.get_mut(&address) {
+    //        Some((name, device)) => {
+    //            let offset = self.state.pio_addr_reg.register().into();
+    //            let res = device.pci_cfg_read(offset, value);
+    //            if let Some(result) = res {
+    //                tracing::trace!(
+    //                    device = &**name,
+    //                    %address,
+    //                    offset,
+    //                    value,
+    //                    "cfg space read"
+    //                );
+    //                result
+    //            } else {
+    //                // TODO: should probably unregister from bus?
+    //                // but then again, shouldn't the device do that as part of
+    //                // its destructor?
+    //                tracelimit::warn_ratelimited!(
+    //                    device = &**name,
+    //                    %address,
+    //                    offset,
+    //                    "cfg space read failed, device went away"
+    //                );
+    //                *value = !0;
+    //                IoResult::Ok
+    //            }
+    //        }
+    //        None => {
+    //            tracing::trace!(%address, "no device found - returning F's");
+    //            *value = !0;
+    //            IoResult::Ok
+    //        }
+    //    }
+    //}
+
+    ///// Handler a write to the DATA register
+    //fn handle_data_write(&mut self, data: u32) -> IoResult {
+    //    tracing::trace!(%self.state.pio_addr_reg, "data write");
+
+    //    if !self.state.pio_addr_reg.enabled() {
+    //        tracelimit::warn_ratelimited!("addr enable bit is set to disabled");
+    //        return IoResult::Ok;
+    //    }
+
+    //    let address = self.state.pio_addr_reg.address();
+    //    match self.pci_devices.get_mut(&address) {
+    //        Some((name, device)) => {
+    //            let offset = self.state.pio_addr_reg.register().into();
+    //            let res = device.pci_cfg_write(offset, data);
+    //            if let Some(result) = res {
+    //                tracing::trace!(
+    //                    device = &**name,
+    //                    %address,
+    //                    offset,
+    //                    data,
+    //                    "cfg space write"
+    //                );
+    //                result
+    //            } else {
+    //                // TODO: should probably unregister from bus?
+    //                // but then again, shouldn't the device do that as part of
+    //                // its destructor?
+    //                tracelimit::warn_ratelimited!(
+    //                    device = &**name,
+    //                    %address,
+    //                    offset,
+    //                    "cfg space write failed, device went away"
+    //                );
+    //                IoResult::Ok
+    //            }
+    //        }
+    //        None => {
+    //            tracing::debug!(%address, "no device found");
+    //            IoResult::Ok
+    //        }
+    //    }
+    //}
+
+    //fn trace_error(&self, e: IoError, operation: &'static str) {
+    //    let error = match e {
+    //        IoError::InvalidRegister => "offset not supported",
+    //        IoError::InvalidAccessSize => "invalid access size",
+    //        IoError::UnalignedAccess => "unaligned access",
+    //    };
+    //    tracelimit::warn_ratelimited!(
+    //        address = %self.state.pio_addr_reg.address(),
+    //        "pci config space {} operation error: {}",
+    //        operation,
+    //        error
+    //    );
+    //}
+
+    //fn trace_recv_error(&self, e: mesh::RecvError, operation: &'static str) {
+    //    tracelimit::warn_ratelimited!(
+    //        address = %self.state.pio_addr_reg.address(),
+    //        "pci config space {} operation recv error: {:?}",
+    //        operation,
+    //        e,
+    //    );
+    //}
+}
+
+impl ChangeDeviceState for GenericPcieSegment {
+    fn start(&mut self) {}
+
+    async fn stop(&mut self) {}
+
+    async fn reset(&mut self) {}
+}
+
+impl ChipsetDevice for GenericPcieSegment {
+    fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
+        Some(self)
+    }
+
+    //fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
+    //    Some(self)
+    //}
+}
+
+impl MmioIntercept for GenericPcieSegment {
+
+    /// Dispatch an MMIO read to the device with the given address.
+    fn mmio_read(&mut self, addr: u64, _data: &mut [u8]) -> IoResult {
+        tracing::error!("unimplemented pcie ecam read: addr = 0x{:x}", addr);
+        IoResult::Err(IoError::InvalidRegister)
+    }
+
+    /// Dispatch an MMIO write to the device with the given address.
+    fn mmio_write(&mut self, addr: u64, _data: &[u8]) -> IoResult {
+        tracing::error!("unimplemented pcie ecam write: addr = 0x{:x}", addr);
+        IoResult::Err(IoError::InvalidRegister)
+    }
+}
+
+//impl PollDevice for GenericPciBus {
+//    fn poll_device(&mut self, cx: &mut Context<'_>) {
+//        self.waker = Some(cx.waker().clone());
+//        if let Some(action) = self.deferred_action.take() {
+//            match action {
+//                DeferredAction::Read {
+//                    mut deferred_device_read,
+//                    bus_read,
+//                    read_len,
+//                    io_port,
+//                    address,
+//                } => {
+//                    let mut buf = 0;
+//                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
+//                    {
+//                        let value = match res {
+//                            Ok(()) => buf,
+//                            Err(e) => {
+//                                self.trace_recv_error(e, "deferred read");
+//                                0
+//                            }
+//                        };
+//                        let value = shift_read_value(io_port, read_len, value);
+//                        bus_read.complete(&value.as_bytes()[..read_len]);
+//                    } else {
+//                        self.deferred_action = Some(DeferredAction::Read {
+//                            deferred_device_read,
+//                            bus_read,
+//                            read_len,
+//                            io_port,
+//                            address,
+//                        });
+//                    }
+//                }
+//                DeferredAction::ReadForWrite {
+//                    mut deferred_device_read,
+//                    bus_write,
+//                    write_len,
+//                    io_port,
+//                    new_value,
+//                    address,
+//                } => {
+//                    let mut buf = 0;
+//                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
+//                    {
+//                        let old_value = match res {
+//                            Ok(()) => buf,
+//                            Err(e) => {
+//                                self.trace_recv_error(e, "deferred read for write");
+//                                0
+//                            }
+//                        };
+//                        let merged_value =
+//                            combine_old_new_values(io_port, old_value, new_value, write_len);
+//                        match self.handle_data_write(merged_value) {
+//                            IoResult::Ok => {
+//                                bus_write.complete();
+//                            }
+//                            IoResult::Err(e) => {
+//                                self.trace_error(e, "write");
+//                                bus_write.complete();
+//                            }
+//                            IoResult::Defer(deferred_device_write) => {
+//                                self.deferred_action = Some(DeferredAction::Write {
+//                                    deferred_device_write,
+//                                    bus_write,
+//                                    value: merged_value,
+//                                    address,
+//                                });
+//                                cx.waker().wake_by_ref();
+//                            }
+//                        }
+//                    } else {
+//                        self.deferred_action = Some(DeferredAction::ReadForWrite {
+//                            deferred_device_read,
+//                            bus_write,
+//                            write_len,
+//                            io_port,
+//                            new_value,
+//                            address,
+//                        });
+//                    }
+//                }
+//                DeferredAction::Write {
+//                    mut deferred_device_write,
+//                    bus_write,
+//                    value,
+//                    address,
+//                } => {
+//                    if let Poll::Ready(res) = deferred_device_write.poll_write(cx) {
+//                        match res {
+//                            Ok(()) => {}
+//                            Err(e) => {
+//                                self.trace_recv_error(e, "deferred write");
+//                            }
+//                        }
+//                        bus_write.complete();
+//                    } else {
+//                        self.deferred_action = Some(DeferredAction::Write {
+//                            deferred_device_write,
+//                            bus_write,
+//                            value,
+//                            address,
+//                        });
+//                    }
+//                }
+//            }
+//        }
+//    }
+//}
+
 mod save_restore {
     use super::*;
     use thiserror::Error;
@@ -695,6 +1075,13 @@ mod save_restore {
         pub struct SavedState {
             #[mesh(1)]
             pub pio_addr_reg: u32,
+        }
+
+        #[derive(Protobuf, SavedStateRoot)]
+        #[mesh(package = "pcie.segment")]
+        pub struct PcieSavedState {
+            #[mesh(1)]
+            pub magic: u32,
         }
     }
 
@@ -742,6 +1129,20 @@ mod save_restore {
             }
 
             Ok(())
+        }
+    }
+
+    impl SaveRestore for GenericPcieSegment {
+        type SavedState = state::PcieSavedState;
+
+        fn save(&mut self) -> Result<Self::SavedState, SaveError> {
+            tracing::error!("pcie save not implemented");
+            Err(SaveError::NotSupported)
+        }
+
+        fn restore(&mut self, _state: Self::SavedState) -> Result<(), RestoreError> {
+            tracing::error!("pcie restore not implemented");
+            Err(RestoreError::SavedStateNotSupported)
         }
     }
 }

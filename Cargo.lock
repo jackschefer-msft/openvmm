@@ -3003,6 +3003,7 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "missing_dev",
+ "nvme",
  "page_table",
  "pal",
  "pal_async",

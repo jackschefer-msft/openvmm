@@ -148,6 +148,31 @@ impl AcpiTopology for Aarch64Topology {
 }
 
 impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
+    fn with_mcfg<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        //let mut srat_extra: Vec<u8> = Vec::new();
+        //T::extend_srat(self.processor_topology, &mut srat_extra);
+        //for range in self.mem_layout.ram() {
+        //    srat_extra.extend_from_slice(
+        //        acpi_spec::srat::SratMemory::new(
+        //            range.range.start(),
+        //            range.range.len(),
+        //            range.vnode,
+        //        )
+        //        .as_bytes(),
+        //    );
+        //}
+
+        (f)(&acpi::builder::Table::new_dyn(
+            acpi_spec::srat::SRAT_REVISIO
+            None,
+            &acpi_spec::srat::SratHeader::new(),
+            &[srat_extra.as_slice()],
+        ))
+    }
+
     fn with_srat<F, R>(&self, f: F) -> R
     where
         F: FnOnce(&acpi::builder::Table<'_>) -> R,
@@ -529,6 +554,7 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         self.with_madt(|t| b.append(t));
         self.with_srat(|t| b.append(t));
+        self.with_mscfg(|t| b.append(t));
         if self.cache_topology.is_some() {
             self.with_pptt(|t| b.append(t));
         }
@@ -548,6 +574,12 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// the ACPI tables.
     pub fn build_srat(&self) -> Vec<u8> {
         self.with_srat(|t| t.to_vec(&OEM_INFO))
+    }
+
+    /// Helper method to construct an MCFG without constructing the rest of
+    /// the ACPI tables.
+    pub fn build_mcfg(&self) -> Vec<u8> {
+        self.with_cfg(|t| t.to_vec(&OEM_INFO))
     }
 
     /// Helper method to construct a PPTT without constructing the rest of the

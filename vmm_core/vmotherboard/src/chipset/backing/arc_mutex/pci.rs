@@ -2,6 +2,7 @@
 // Licensed under the MIT License.
 
 use crate::BusIdPci;
+use crate::BusIdPcie;
 use crate::chipset::PciConflict;
 use crate::chipset::PciConflictReason;
 use chipset_device::ChipsetDevice;
@@ -56,6 +57,65 @@ impl BusResolverWeakMutexPci {
 
                 let (bus, device, function) = bdf;
                 match pci_bus.add_pci_device(bus, device, function, name, dev) {
+                    Ok(()) => {}
+                    Err(conflict) => {
+                        errs.push(conflict);
+                        continue;
+                    }
+                };
+            }
+        }
+
+        if !errs.is_empty() { Err(errs) } else { Ok(()) }
+    }
+}
+
+/// An abstraction over a PCIe segment implementation that is able to route accesses
+/// to `Weak<CloseableMutex<dyn ChipsetDevice>>` devices.
+pub trait RegisterWeakMutexPcie: Send {
+    /// Try to add a PCIe endpoint to the segment, reporting any conflicts.
+    fn add_endpoint(
+        &mut self,
+        bus: u8,
+        device: u8,
+        function: u8,
+        name: Arc<str>,
+        dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+    ) -> Result<(), PciConflict>;
+}
+
+pub struct WeakMutexPcieEntry {
+    pub bdf: (u8, u8, u8),
+    pub name: Arc<str>,
+    pub dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+}
+
+#[derive(Default)]
+pub struct BusResolverWeakMutexPcie {
+    pub segments: HashMap<BusIdPcie, Box<dyn RegisterWeakMutexPcie>>,
+    pub endpoints: HashMap<BusIdPcie, Vec<WeakMutexPcieEntry>>,
+}
+
+impl BusResolverWeakMutexPcie {
+    pub fn resolve(mut self) -> Result<(), Vec<PciConflict>> {
+        let mut errs = Vec::new();
+
+        for (bus_id, entries) in self.endpoints {
+            for WeakMutexPcieEntry { bdf, name, dev } in entries {
+                let segment = match self.segments.get_mut(&bus_id) {
+                    Some(segment) => segment,
+                    None => {
+                        errs.push(PciConflict {
+                            bdf,
+                            conflict_dev: name.clone(),
+                            reason: PciConflictReason::MissingBus,
+                        });
+                        continue;
+                    }
+                };
+
+                let (bus, device, function) = bdf;
+                match segment.add_endpoint(bus, device, function, name, dev) {
                     Ok(()) => {}
                     Err(conflict) => {
                         errs.push(conflict);

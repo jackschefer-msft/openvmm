@@ -6,6 +6,7 @@
 
 use super::services::ArcMutexChipsetServices;
 use crate::BusIdPci;
+use crate::BusIdPcie;
 use crate::VmmChipsetDevice;
 use arc_cyclic_builder::ArcCyclicBuilder;
 use arc_cyclic_builder::ArcCyclicBuilderExt;
@@ -22,7 +23,7 @@ pub(crate) enum AddDeviceErrorKind {
     #[error("could not construct device")]
     DeviceError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 
-    #[error("no pci bus address provided")]
+    #[error("no pci bus address provided2")]
     NoPciBusAddress,
     #[error("error finalizing device")]
     Finalize(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
@@ -71,6 +72,7 @@ pub struct ArcMutexChipsetDeviceBuilder<'a, 'b, T> {
 
     pci_addr: Option<(u8, u8, u8)>,
     pci_bus_id: Option<BusIdPci>,
+    pcie_segment: Option<BusIdPcie>,
     external_pci: bool,
 }
 
@@ -97,6 +99,7 @@ where
 
             pci_addr: None,
             pci_bus_id: None,
+            pcie_segment: None,
             external_pci: false,
         }
     }
@@ -117,6 +120,12 @@ where
     /// For PCI devices: place the device on the specific bus
     pub fn on_pci_bus(mut self, id: BusIdPci) -> Self {
         self.pci_bus_id = Some(id);
+        self
+    }
+
+    /// For PCIe endpoints: place the endpoint on the specified segment
+    pub fn on_pcie_segment(mut self, id: BusIdPcie) -> Self {
+        self.pcie_segment = Some(id);
         self
     }
 
@@ -180,15 +189,16 @@ where
                     }
                 };
 
-                let bus_id = match self.pci_bus_id.take() {
-                    Some(bus_id) => bus_id,
-                    None => panic!(
+                if let Some(bus_id) = self.pcie_segment {
+                    self.services.register_static_pcie(bus_id, bdf);
+                } else if let Some(bus_id) = self.pci_bus_id {
+                    self.services.register_static_pci(bus_id, bdf);
+                } else {
+                    panic!(
                         "wiring error: did not invoke `on_pci_bus` for `{}`",
                         self.dev_name
-                    ),
-                };
-
-                self.services.register_static_pci(bus_id, bdf);
+                    )
+                }
             }
         }
 

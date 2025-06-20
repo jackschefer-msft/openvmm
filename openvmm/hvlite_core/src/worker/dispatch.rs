@@ -1443,6 +1443,7 @@ impl InitializedVm {
 
         let pci_bus_id_generic = vmotherboard::BusId::new("generic");
         let pci_bus_id_piix4 = vmotherboard::BusId::new("i440bx");
+        let pcie_segment0 = vmotherboard::BusId::new("pcie0");
 
         let deps_generic_pci_bus =
             (cfg.chipset.with_generic_pci_bus).then_some(dev::GenericPciBusDeps {
@@ -1450,6 +1451,14 @@ impl InitializedVm {
                 pio_addr: pci_bus::standard_x86_io_ports::ADDR_START,
                 pio_data: pci_bus::standard_x86_io_ports::DATA_START,
             });
+
+        let deps_generic_pcie_segment = Some(dev::GenericPcieSegmentDeps {
+            bus_id: pcie_segment0.clone(),
+            segment_id: 0,
+            start_bus: 1,
+            bus_count: 127,
+            ecam_address: 0x940000000 // Ah yes, MMIO GPA 37GB, surely nobody is using that
+        });
 
         let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
 
@@ -1538,6 +1547,7 @@ impl InitializedVm {
                 deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
+                deps_generic_pcie_segment,
                 deps_generic_pic,
                 deps_generic_pit,
                 deps_generic_psp,
@@ -1603,6 +1613,24 @@ impl InitializedVm {
                     )
                 })?;
         }
+
+        // An NVMe controller? Why not!
+        let mut msi_set = MsiInterruptSet::new();
+        chipset_builder
+            .arc_mutex_device("nvme0")
+            .on_pcie_segment(pcie_segment0.clone())
+            .with_pci_addr(4, 0, 0)
+            .add(|services| {
+                nvme::NvmeController::new(
+                    &driver_source,
+                    gm.clone(),
+                    &mut msi_set,
+                    &mut services.register_mmio(),
+                    nvme::NvmeControllerCaps {
+                        msix_count: 8,
+                        max_io_queues: 7,
+                        subsystem_id: Guid::new_random(),
+                    })})?;
 
         // Add the GIC.
         #[cfg(guest_arch = "aarch64")]
@@ -2345,6 +2373,7 @@ impl LoadedVmInner {
                         let tables = if let Some(dsdt) = custom_dsdt {
                             acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
                         } else {
+                            tracing::info!("build_acpi_tables");
                             acpi_builder.build_acpi_tables(gpa, |mem_layout, dsdt| {
                                 add_devices_to_dsdt(
                                     mem_layout,
@@ -2975,7 +3004,8 @@ fn add_devices_to_dsdt(
 
     if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
-        dsdt.add_pci(low_mmio_gap, high_mmio_gap, pci_legacy_interrupts);
+        //dsdt.add_pci(low_mmio_gap, high_mmio_gap, pci_legacy_interrupts);
+        dsdt.add_pcie(0, 1, 127, low_mmio_gap, high_mmio_gap)
     } else {
         dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
     }

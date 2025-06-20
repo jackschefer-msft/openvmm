@@ -363,6 +363,49 @@ impl Dsdt {
         self.add_object(&pci0);
     }
 
+    /// Adds a PCIe root complext with the specified MMIO ranges.
+    ///
+    /// ```text
+    /// Device(\_SB.PCI1)
+    /// {
+    ///     Name(_HID, PNP0A08)
+    ///     Name(_SEG, ...)
+    ///     Name(_CRS, ResourceTemplate()
+    ///     {
+    ///         WordBusNumber(...) // Bus translation info
+    ///         QWordMemory() // Low gap
+    ///         QWordMemory() // High gap
+    ///     })
+    /// }
+    /// ```
+    pub fn add_pcie(
+        &mut self,
+        segment_id: u16,
+        start_bus: u8,
+        bus_count: u8,
+        low: MemoryRange,
+        high: MemoryRange,
+    ) {
+        let mut pci0 = Device::new(b"\\_SB.PCI0");
+        pci0.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0A08")));
+        pci0.add_object(&NamedInteger::new(b"_SEG", segment_id.into()));
+
+        // OS negotiation for control of the bus. See https://uefi.org/specs/ACPI/6.4/06_Device_Configuration/Device_Configuration.html#osc-operating-system-capabilities
+        // TODO: Lots of work needed for _OSC.
+        let mut empty_os_method = Method::new(b"_OSC");
+        empty_os_method.set_arg_count(4);
+        empty_os_method.add_operation(&ReturnOp {
+            result: Buffer(0x10u64.to_le_bytes()).to_bytes(),
+        });
+        pci0.add_object(&empty_os_method);
+        let mut crs = CurrentResourceSettings::new();
+        crs.add_resource(&BusNumber::new(start_bus.into(), bus_count.into()));
+        crs.add_resource(&QwordMemory::new(low.start(), low.end() - low.start()));
+        crs.add_resource(&QwordMemory::new(high.start(), high.end() - high.start()));
+        pci0.add_object(&crs);
+        self.add_object(&pci0);
+    }
+
     /// Add a VMBUS device to the DSDT.
     ///
     /// If `in_pci`, then enumerate the device under PCI0. Otherwise, enumerate

@@ -15,6 +15,7 @@ pub mod fadt;
 pub mod madt;
 pub mod pptt;
 pub mod srat;
+pub mod mcfg;
 
 #[allow(non_camel_case_types)]
 mod packed_nums {
