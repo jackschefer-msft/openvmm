@@ -281,6 +281,7 @@ impl CompletionQueue {
         std::sync::atomic::fence(Ordering::Release);
 
         if let Some(interrupt) = &self.interrupt {
+            tracing::debug!("deliver interrupt {:?}", interrupt);
             interrupt.deliver();
         }
         self.tail = advance(self.tail, self.len);

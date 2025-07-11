@@ -1601,7 +1601,7 @@ impl InitializedVm {
                 .on_pci_bus(pci_bus_id_generic.clone())
                 .add(|services| {
                     missing_dev::MissingDev::from_manifest(
-                        MissingDevManifest::new().claim_pci((0, 0, 0), 0x8086, 0x7111),
+                        MissingDevManifest::new().claim_pci((0, 0, 1), 0x8086, 0x7111),
                         &mut services.register_mmio(),
                         &mut services.register_pio(),
                     )
@@ -1981,12 +1981,46 @@ impl InitializedVm {
                         })
                         .await?;
                 }
+            } else {
+                for dev_cfg in cfg.vpci_devices {
+                    if dev_cfg.vtl != DeviceVtl::Vtl0 {
+                        anyhow::bail!("only vtl0");
+                    }
+
+                    tracing::info!("build epci device");
+                    let device_name = format!("{}:epci-{}", dev_cfg.resource.id(), dev_cfg.instance_id);
+                    let mut msi_set = MsiInterruptSet::new();
+                    chipset_builder
+                        .arc_mutex_device(device_name)
+                        .on_pci_bus(pci_bus_id_generic.clone())
+                        .with_pci_addr(0, 0, 0)
+                        .try_add_async(async |services| {
+                            resolver
+                                .resolve(
+                                    dev_cfg.resource,
+                                    pci_resources::ResolvePciDeviceHandleParams {
+                                        register_msi: &mut msi_set,
+                                        register_mmio: &mut services.register_mmio(),
+                                        driver_source: &driver_source,
+                                        guest_memory: &gm,
+                                        doorbell_registration: partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                                        shared_mem_mapper: Some(&mapper),
+                                    },
+                                )
+                                .await
+                                .map(|r| r.0)
+                        })
+                        .await?;
+
+                    //msi_set.connect()
+                }
             }
         }
 
         // Add vmbus devices.
         let mut vmbus_devices = Vec::new();
         for (vtl, resource) in cfg.vmbus_devices {
+            tracing::info!("ADDING VMBUS DEVICE");
             let vmbus = match vtl {
                 DeviceVtl::Vtl0 => vmbus_server
                     .as_ref()
@@ -2347,6 +2381,7 @@ impl LoadedVmInner {
                 let regs =
                     super::vm_loaders::linux::load_linux_x86(&kernel_config, &self.gm, |gpa| {
                         let tables = if let Some(dsdt) = custom_dsdt {
+                            tracing::info!("USING CUSTOM DSDT");
                             acpi_builder.build_acpi_tables_custom_dsdt(gpa, dsdt)
                         } else {
                             acpi_builder.build_acpi_tables(gpa, |mem_layout, dsdt| {
@@ -2405,9 +2440,11 @@ impl LoadedVmInner {
                 uefi_console_mode,
                 default_boot_always_attempt,
             } => {
+                tracing::info!("BUILDING CUSTOM UEFI");
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
                 let pptt = cache_topology.is_some().then(|| acpi_builder.build_pptt());
+                let mcfg = acpi_builder.build_mcfg();
                 let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
                     debugging: enable_debugging,
                     memory_protections: enable_memory_protections,
@@ -2428,6 +2465,7 @@ impl LoadedVmInner {
                     load_settings,
                     &madt,
                     &srat,
+                    &mcfg,
                     pptt.as_deref(),
                 )?;
 
@@ -2978,9 +3016,11 @@ fn add_devices_to_dsdt(
     let high_mmio_gap = MemoryRange::new(high_mmio_space);
 
     if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
+        tracing::info!("ADDING PCI BUS");
         // TODO: actually plumb through legacy PCI interrupts
         dsdt.add_pci(low_mmio_gap, high_mmio_gap, pci_legacy_interrupts);
     } else {
+        tracing::info!("ADDING MMIO MODULE");
         dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
     }
 

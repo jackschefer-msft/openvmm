@@ -3009,6 +3009,7 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pci_resources",
  "range_map_vec",
  "scsi_core",
  "scsidisk",

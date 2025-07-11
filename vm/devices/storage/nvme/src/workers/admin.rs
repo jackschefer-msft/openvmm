@@ -500,6 +500,8 @@ impl AdminHandler {
                     }
                 };
 
+                tracing::debug!("finished processing command");
+
                 let result = match result {
                     Ok(Some(cr)) => cr,
                     Ok(None) => return Ok(()),
@@ -552,6 +554,7 @@ impl AdminHandler {
         state.admin_cq.write(&self.config.mem, completion)?;
         // Again, for simplicity, update EVT_IDX here.
         state.admin_cq.catch_up_evt_idx(true, 0, &self.config.mem)?;
+        tracing::debug!("admin completion queue updated");
         Ok(())
     }
 

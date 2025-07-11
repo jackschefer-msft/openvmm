@@ -68,6 +68,7 @@ pub const OEM_INFO: acpi::builder::OemInfo = acpi::builder::OemInfo {
 
 pub trait AcpiTopology: ArchTopology + Inspect + Sized {
     fn extend_srat(topology: &ProcessorTopology<Self>, srat: &mut Vec<u8>);
+    fn extend_mcfg(mcfg: &mut Vec<u8>);
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>);
 }
 
@@ -90,6 +91,17 @@ impl AcpiTopology for X86Topology {
                 );
             }
         }
+    }
+
+    fn extend_mcfg(mcfg: &mut Vec<u8>) {
+        mcfg.extend_from_slice(
+            acpi_spec::mcfg::McfgSegmentBusRange::new(
+                0xc0000000, // ecam at 3gb
+                0, // segment
+                0, // startbus
+                255 // endbus
+            ).as_bytes()
+        )
     }
 
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>) {
@@ -128,6 +140,17 @@ impl AcpiTopology for Aarch64Topology {
                     .as_bytes(),
             );
         }
+    }
+
+    fn extend_mcfg(mcfg: &mut Vec<u8>) {
+        mcfg.extend_from_slice(
+            acpi_spec::mcfg::McfgSegmentBusRange::new(
+                0xc0000000, // ecam at 3gb
+                0, // segment
+                0, // startbus
+                255 // endbus
+            ).as_bytes()
+        )
     }
 
     fn extend_madt(topology: &ProcessorTopology<Self>, madt: &mut Vec<u8>) {
@@ -170,6 +193,21 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
             None,
             &acpi_spec::srat::SratHeader::new(),
             &[srat_extra.as_slice()],
+        ))
+    }
+
+    fn with_mcfg<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        let mut mcfg_extra: Vec<u8> = Vec::new();
+        T::extend_mcfg(&mut mcfg_extra);
+
+        (f)(&acpi::builder::Table::new_dyn(
+            acpi_spec::mcfg::MCFG_REVISION,
+            None,
+            &acpi_spec::mcfg::McfgHeader::new(),
+            &[mcfg_extra.as_slice()],
         ))
     }
 
@@ -548,6 +586,12 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// the ACPI tables.
     pub fn build_srat(&self) -> Vec<u8> {
         self.with_srat(|t| t.to_vec(&OEM_INFO))
+    }
+
+    /// Helper method to construct an MCFG without constructing the rest of
+    /// the ACPI tables.
+    pub fn build_mcfg(&self) -> Vec<u8> {
+        self.with_mcfg(|t| t.to_vec(&OEM_INFO))
     }
 
     /// Helper method to construct a PPTT without constructing the rest of the

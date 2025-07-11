@@ -309,7 +309,7 @@ impl VmManifestBuilder {
                     with_generic_ioapic: is_x86,
                     with_generic_isa_dma: false,
                     with_generic_isa_floppy: false,
-                    with_generic_pci_bus: false,
+                    with_generic_pci_bus: true,
                     with_generic_pic: false,
                     with_generic_pit: false,
                     with_generic_psp: self.psp,
@@ -547,13 +547,13 @@ impl VmChipsetResult {
                         .claim_pio("port61", 0x61..=0x61)
                         .into_resource(),
                 },
-                ChipsetDeviceHandle {
-                    name: "missing-pci".to_owned(),
-                    resource: MissingDevHandle::new()
-                        .claim_pio("address", 0xcf8..=0xcfb)
-                        .claim_pio("data", 0xcfc..=0xcff)
-                        .into_resource(),
-                },
+                //ChipsetDeviceHandle {
+                //    name: "missing-pci".to_owned(),
+                //    resource: MissingDevHandle::new()
+                //        .claim_pio("address", 0xcf8..=0xcfb)
+                //        .claim_pio("data", 0xcfc..=0xcff)
+                //        .into_resource(),
+                //},
                 // Linux will probe 0x87 during boot to determine if there the DMA
                 // device is present
                 ChipsetDeviceHandle {

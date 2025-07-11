@@ -50,6 +50,7 @@ pub fn load_uefi(
     load_settings: UefiLoadSettings,
     madt: &[u8],
     srat: &[u8],
+    mcfg: &[u8],
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
     if mem_layout.mmio().len() < 2 {
@@ -122,6 +123,7 @@ pub fn load_uefi(
     })
     .add_raw(config::BlobStructureType::Madt, madt)
     .add_raw(config::BlobStructureType::Srat, srat)
+    .add_raw(config::BlobStructureType::Mcfg, mcfg)
     .add_raw(config::BlobStructureType::MemoryMap, memory_map.as_bytes())
     .add(&config::BiosGuid(Guid::new_random()))
     .add(&config::Entropy(entropy))
