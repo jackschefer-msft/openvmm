@@ -1453,6 +1453,7 @@ impl InitializedVm {
                 bus_id: pci_bus_id_generic.clone(),
                 pio_addr: pci_bus::standard_x86_io_ports::ADDR_START,
                 pio_data: pci_bus::standard_x86_io_ports::DATA_START,
+                ecam_base: 3 * 1024 * 1024 * 1024,
             });
 
         let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});

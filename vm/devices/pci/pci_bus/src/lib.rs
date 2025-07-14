@@ -28,6 +28,9 @@ use chipset_device::io::deferred::defer_write;
 use chipset_device::pio::ControlPortIoIntercept;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
+use chipset_device::mmio::ControlMmioIntercept;
+use chipset_device::mmio::MmioIntercept;
+use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::poll_device::PollDevice;
 use inspect::Inspect;
 use inspect::InspectMut;
@@ -150,6 +153,9 @@ pub struct GenericPciBus {
     // Runtime glue
     pio_addr: Box<dyn ControlPortIoIntercept>,
     pio_data: Box<dyn ControlPortIoIntercept>,
+
+    ecam: Box<dyn ControlMmioIntercept>,
+
     #[inspect(with = "|x| inspect::iter_by_key(x).map_value(|(name, _)| name)")]
     pci_devices: BTreeMap<PciAddr, (Arc<str>, Box<dyn GenericPciBusDevice>)>,
 
@@ -166,16 +172,24 @@ impl GenericPciBus {
     /// Create a new [`GenericPciBus`] with the specified (4-byte) IO ports.
     pub fn new(
         register_pio: &mut dyn RegisterPortIoIntercept,
+        register_mmio: &mut dyn RegisterMmioIntercept,
         pio_addr: u16,
         pio_data: u16,
+        ecam_base: u64,
     ) -> GenericPciBus {
         let mut addr_control = register_pio.new_io_region("addr", 4);
         let mut data_control = register_pio.new_io_region("data", 4);
         addr_control.map(pio_addr);
         data_control.map(pio_data);
+
+        let mut ecam_control = register_mmio.new_io_region("ecam", 255 * 4096);
+        ecam_control.map(ecam_base);
+
         GenericPciBus {
             pio_addr: addr_control,
             pio_data: data_control,
+            ecam: ecam_control,
+
             pci_devices: BTreeMap::new(),
 
             waker: None,
@@ -356,6 +370,10 @@ impl ChangeDeviceState for GenericPciBus {
 
 impl ChipsetDevice for GenericPciBus {
     fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
+        Some(self)
+    }
+
+    fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
         Some(self)
     }
 
@@ -638,6 +656,131 @@ impl PollDevice for GenericPciBus {
                         });
                     }
                 }
+            }
+        }
+    }
+}
+
+impl MmioIntercept for GenericPciBus {
+    fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
+        if !matches!(data.len(), 1 | 2 | 4) {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+
+        if !(data.len() == 4 && addr & 3 == 0
+            || data.len() == 2 && addr & 1 == 0
+            || data.len() == 1)
+        {
+            return IoResult::Err(IoError::UnalignedAccess);
+        }
+
+        let ecam_offset = self.ecam.offset_of(addr);
+        if ecam_offset.is_none() {
+            tracing::info!("mmio read outside of ecam?");
+            return IoResult::Err(IoError::InvalidRegister);
+        }
+
+        let ecam_offset = ecam_offset.unwrap();
+
+        let cfg_offset = ecam_offset % 4096;
+        let bdf = (ecam_offset / 4096) & 0xFFFF;
+        let address = PciAddr {
+            bus: ((bdf & 0xFF00) >> 8) as u8,
+            device: ((bdf & 0b11111000) >> 3) as u8,
+            function: (bdf & 0b111) as u8,
+        };
+
+        let mut value = 0;
+        match self.pci_devices.get_mut(&address) {
+            Some((name, device)) => {
+                let res = device.pci_cfg_read(cfg_offset.try_into().unwrap(), &mut value);
+                if let Some(_result) = res {
+                    tracing::info!(
+                        device = &**name,
+                        %address,
+                        cfg_offset,
+                        value,
+                        "cfg space read"
+                    );
+                } else {
+                    // TODO: should probably unregister from bus?
+                    // but then again, shouldn't the device do that as part of
+                    // its destructor?
+                    tracelimit::warn_ratelimited!(
+                        device = &**name,
+                        %address,
+                        cfg_offset,
+                        "cfg space read failed, device went away"
+                    );
+                    value = !0;
+                }
+            }
+            None => {
+                tracing::trace!(%address, "no device found - returning F's");
+                value = !0;
+            }
+        }
+
+        data.copy_from_slice(&value.as_bytes()[..data.len()]);
+        IoResult::Ok
+    }
+
+    fn mmio_write(&mut self, addr: u64, data: &[u8]) -> IoResult {
+        if !matches!(data.len(), 1 | 2 | 4) {
+            return IoResult::Err(IoError::InvalidAccessSize);
+        }
+
+        let new_value = {
+            let mut temp: u32 = 0;
+            temp.as_mut_bytes()[..data.len()].copy_from_slice(data);
+            temp
+        };
+
+        //tracing::trace!(?io_port, data = ?new_value, "io port write");
+        let ecam_offset = self.ecam.offset_of(addr);
+        if ecam_offset.is_none() {
+            tracing::info!("mmio read outside of ecam?");
+            return IoResult::Err(IoError::InvalidRegister);
+        }
+
+        let ecam_offset = ecam_offset.unwrap();
+
+        let cfg_offset = ecam_offset % 4096;
+        let bdf = (ecam_offset / 4096) & 0xFFFF;
+        let address = PciAddr {
+            bus: ((bdf & 0xFF00) >> 8) as u8,
+            device: ((bdf & 0b11111000) >> 3) as u8,
+            function: (bdf & 0b111) as u8,
+        };
+
+        match self.pci_devices.get_mut(&address) {
+            Some((name, device)) => {
+                let res = device.pci_cfg_write(cfg_offset.try_into().unwrap(), new_value);
+                if let Some(result) = res {
+                    tracing::info!(
+                        device = &**name,
+                        %address,
+                        cfg_offset,
+                        new_value,
+                        "cfg space write"
+                    );
+                    result
+                } else {
+                    // TODO: should probably unregister from bus?
+                    // but then again, shouldn't the device do that as part of
+                    // its destructor?
+                    tracelimit::warn_ratelimited!(
+                        device = &**name,
+                        %address,
+                        cfg_offset,
+                        "cfg space write failed, device went away"
+                    );
+                    IoResult::Ok
+                }
+            }
+            None => {
+                tracing::trace!(%address, "no device found - dropping");
+                IoResult::Ok
             }
         }
     }

@@ -7,6 +7,7 @@ use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
+use chipset_device::mmio::RegisterMmioIntercept;
 use chipset_device::poll_device::PollDevice;
 use inspect::InspectMut;
 use pci_bus::GenericPciBus;
@@ -40,14 +41,17 @@ impl Piix4PciBus {
     /// Create a new [`Piix4PciBus`]
     pub fn new(
         register_pio: &mut dyn RegisterPortIoIntercept,
+        register_mmio: &mut dyn RegisterMmioIntercept,
         reset_evt: Box<dyn Fn() + Send + Sync>,
     ) -> Self {
         Piix4PciBus {
             reset_evt,
             bus: GenericPciBus::new(
                 register_pio,
+                register_mmio,
                 io_ports::PCI_ADDR_START,
                 io_ports::PCI_DATA_START,
+                0,
             ),
         }
     }

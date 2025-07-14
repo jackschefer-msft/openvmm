@@ -261,10 +261,16 @@ impl<'a> BaseChipsetBuilder<'a> {
             bus_id,
             pio_addr,
             pio_data,
+            ecam_base,
         }) = deps_generic_pci_bus
         {
             let pci = builder.arc_mutex_device("pci_bus").add(|services| {
-                pci_bus::GenericPciBus::new(&mut services.register_pio(), pio_addr, pio_data)
+                pci_bus::GenericPciBus::new(
+                    &mut services.register_pio(),
+                    &mut services.register_mmio(),
+                    pio_addr,
+                    pio_data,
+                    ecam_base)
             })?;
 
             builder.register_weak_mutex_pci_bus(bus_id, Box::new(pci));
@@ -280,6 +286,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             let pci = builder.arc_mutex_device("piix4-pci-bus").add(|services| {
                 chipset_legacy::piix4_pci_bus::Piix4PciBus::new(
                     &mut services.register_pio(),
+                    &mut services.register_mmio(),
                     reset.clone(),
                 )
             })?;
@@ -1206,6 +1213,8 @@ pub mod options {
             pub pio_addr: u16,
             /// Port io address of the 32-bit PCI DATA register
             pub pio_data: u16,
+            /// Base of the ECAM region for ths PCI bus.
+            pub ecam_base: u64,
         }
 
         /// PIIX4 PCI Bus
