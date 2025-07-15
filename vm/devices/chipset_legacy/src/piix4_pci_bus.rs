@@ -5,6 +5,7 @@
 
 use chipset_device::ChipsetDevice;
 use chipset_device::io::IoResult;
+use chipset_device::io::IoError;
 use chipset_device::pio::PortIoIntercept;
 use chipset_device::pio::RegisterPortIoIntercept;
 use chipset_device::mmio::RegisterMmioIntercept;
@@ -101,7 +102,8 @@ impl ChipsetDevice for Piix4PciBus {
     }
 
     fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
-        Some(self.as_pci_bus())
+        //Some(self.as_pci_bus())
+        None
     }
 }
 
@@ -112,7 +114,8 @@ impl PortIoIntercept for Piix4PciBus {
             return IoResult::Ok;
         }
 
-        self.bus.io_read(io_port, data)
+        //self.bus.io_read(io_port, data)
+        IoResult::Err(IoError::InvalidRegister)
     }
 
     fn io_write(&mut self, io_port: u16, data: &[u8]) -> IoResult {
@@ -121,7 +124,8 @@ impl PortIoIntercept for Piix4PciBus {
             return IoResult::Ok;
         }
 
-        self.bus.io_write(io_port, data)
+        //self.bus.io_write(io_port, data)
+        IoResult::Err(IoError::InvalidRegister)
     }
 }
 

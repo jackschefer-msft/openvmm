@@ -151,8 +151,8 @@ enum DeferredAction {
 #[derive(InspectMut)]
 pub struct GenericPciBus {
     // Runtime glue
-    pio_addr: Box<dyn ControlPortIoIntercept>,
-    pio_data: Box<dyn ControlPortIoIntercept>,
+    //pio_addr: Box<dyn ControlPortIoIntercept>,
+    //pio_data: Box<dyn ControlPortIoIntercept>,
 
     ecam: Box<dyn ControlMmioIntercept>,
 
@@ -171,23 +171,23 @@ pub struct GenericPciBus {
 impl GenericPciBus {
     /// Create a new [`GenericPciBus`] with the specified (4-byte) IO ports.
     pub fn new(
-        register_pio: &mut dyn RegisterPortIoIntercept,
+        _register_pio: &mut dyn RegisterPortIoIntercept,
         register_mmio: &mut dyn RegisterMmioIntercept,
-        pio_addr: u16,
-        pio_data: u16,
+        _pio_addr: u16,
+        _pio_data: u16,
         ecam_base: u64,
     ) -> GenericPciBus {
-        let mut addr_control = register_pio.new_io_region("addr", 4);
-        let mut data_control = register_pio.new_io_region("data", 4);
-        addr_control.map(pio_addr);
-        data_control.map(pio_data);
+        //let mut addr_control = register_pio.new_io_region("addr", 4);
+        //let mut data_control = register_pio.new_io_region("data", 4);
+        //addr_control.map(pio_addr);
+        //data_control.map(pio_data);
 
         let mut ecam_control = register_mmio.new_io_region("ecam", 255 * 4096);
         ecam_control.map(ecam_base);
 
         GenericPciBus {
-            pio_addr: addr_control,
-            pio_data: data_control,
+            //pio_addr: addr_control,
+            //pio_data: data_control,
             ecam: ecam_control,
 
             pci_devices: BTreeMap::new(),
@@ -370,7 +370,8 @@ impl ChangeDeviceState for GenericPciBus {
 
 impl ChipsetDevice for GenericPciBus {
     fn supports_pio(&mut self) -> Option<&mut dyn PortIoIntercept> {
-        Some(self)
+        //Some(self)
+        None
     }
 
     fn supports_mmio(&mut self) -> Option<&mut dyn MmioIntercept> {
@@ -378,7 +379,8 @@ impl ChipsetDevice for GenericPciBus {
     }
 
     fn supports_poll_device(&mut self) -> Option<&mut dyn PollDevice> {
-        Some(self)
+        //Some(self)
+        None
     }
 }
 
@@ -398,268 +400,268 @@ fn combine_old_new_values(io_port: u16, old_value: u32, new_value: u32, len: usi
     (old_value & !(mask << shift)) | (new_value << shift)
 }
 
-impl PortIoIntercept for GenericPciBus {
-    fn io_read(&mut self, io_port: u16, data: &mut [u8]) -> IoResult {
-        if !matches!(data.len(), 1 | 2 | 4) {
-            return IoResult::Err(IoError::InvalidAccessSize);
-        }
-
-        if !(data.len() == 4 && io_port & 3 == 0
-            || data.len() == 2 && io_port & 1 == 0
-            || data.len() == 1)
-        {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let mut value = 0;
-        let res = match io_port {
-            _ if self.pio_addr.offset_of(io_port).is_some() => self.handle_addr_read(&mut value),
-            _ if self.pio_data.offset_of(io_port).is_some() => self.handle_data_read(&mut value),
-            _ => {
-                return IoResult::Err(IoError::InvalidRegister);
-            }
-        };
-
-        tracing::trace!(?io_port, ?res, ?data, "io port read");
-
-        match res {
-            IoResult::Ok => {
-                let value = shift_read_value(io_port, data.len(), value);
-                data.copy_from_slice(&value.as_bytes()[..data.len()]);
-                IoResult::Ok
-            }
-            IoResult::Err(e) => {
-                self.trace_error(e, "read");
-                // Regardless of the pci error that occurred we return all zeros.
-                // This is technically device-specific behavior, but it's what all
-                // hyper-v devices do and it's worked for us so far.
-                data.zero();
-                IoResult::Ok
-            }
-            IoResult::Defer(deferred_device_read) => {
-                let (bus_read, bus_token) = defer_read();
-                assert!(self.deferred_action.is_none());
-                self.deferred_action = Some(DeferredAction::Read {
-                    deferred_device_read,
-                    bus_read,
-                    read_len: data.len(),
-                    io_port,
-                    address: self.state.pio_addr_reg.address(),
-                });
-                if let Some(waker) = self.waker.take() {
-                    waker.wake();
-                }
-                IoResult::Defer(bus_token)
-            }
-        }
-    }
-
-    fn io_write(&mut self, io_port: u16, data: &[u8]) -> IoResult {
-        if !matches!(data.len(), 1 | 2 | 4) {
-            return IoResult::Err(IoError::InvalidAccessSize);
-        }
-
-        let new_value = {
-            let mut temp: u32 = 0;
-            temp.as_mut_bytes()[..data.len()].copy_from_slice(data);
-            temp
-        };
-
-        tracing::trace!(?io_port, data = ?new_value, "io port write");
-
-        match io_port {
-            _ if self.pio_addr.offset_of(io_port).is_some() => {
-                // In theory, only 4-byte accesses are valid here, but
-                // RedHat Linux modifies the bottom byte of the PCI
-                // configuration address by using a 1-byte access
-                let v = if data.len() == 4 {
-                    new_value
-                } else {
-                    let mut old_value = 0;
-                    self.handle_addr_read(&mut old_value).unwrap();
-                    match data.len() {
-                        2 => (old_value & 0xFFFF0000) | (new_value & 0xFFFF),
-                        1 => (old_value & 0xFFFFFF00) | (new_value & 0xFF),
-                        _ => unreachable!(),
-                    }
-                };
-
-                self.handle_addr_write(v)
-            }
-            _ if self.pio_data.offset_of(io_port).is_some() => {
-                let merged_value = if data.len() == 4 {
-                    new_value
-                } else {
-                    // If the access isn't a double word, read in the old data
-                    // to form a full word.
-                    //
-                    // Note that this isn't *really* correct, because reading
-                    // bits may have a side-effect. Also, writing to bits that
-                    // weren't actually written to may have side-effects...
-                    //
-                    // However, this technique appears to work fine for
-                    // everything we've encountered so far ¯\_(ツ)_/¯
-                    let mut old_value = 0;
-                    match self.handle_data_read(&mut old_value) {
-                        IoResult::Ok => {
-                            combine_old_new_values(io_port, old_value, new_value, data.len())
-                        }
-                        IoResult::Err(e) => {
-                            self.trace_error(e, "read for undersized write");
-                            // Regardless of the pci error that occurred, we return all zeros.
-                            // This is technically device-specific behavior, but it's what all
-                            // hyper-v devices do and it's worked for us so far.
-                            0
-                        }
-                        IoResult::Defer(deferred_device_read) => {
-                            let (bus_write, bus_token) = defer_write();
-                            assert!(self.deferred_action.is_none());
-                            self.deferred_action = Some(DeferredAction::ReadForWrite {
-                                deferred_device_read,
-                                bus_write,
-                                write_len: data.len(),
-                                io_port,
-                                new_value,
-                                address: self.state.pio_addr_reg.address(),
-                            });
-                            if let Some(waker) = self.waker.take() {
-                                waker.wake();
-                            }
-                            return IoResult::Defer(bus_token);
-                        }
-                    }
-                };
-
-                let write_result = self.handle_data_write(merged_value);
-                match write_result {
-                    IoResult::Err(e) => {
-                        self.trace_error(e, "write");
-                        IoResult::Ok
-                    }
-                    IoResult::Ok | IoResult::Defer(_) => {
-                        // If the write was successful we're all set.
-                        // If the write is deferred we have no extra work to do after
-                        // it resolves, unlike with read, so we can just return it and
-                        // let the motherboard poll.
-                        write_result
-                    }
-                }
-            }
-            _ => IoResult::Err(IoError::InvalidRegister),
-        }
-    }
-}
-
-impl PollDevice for GenericPciBus {
-    fn poll_device(&mut self, cx: &mut Context<'_>) {
-        self.waker = Some(cx.waker().clone());
-        if let Some(action) = self.deferred_action.take() {
-            match action {
-                DeferredAction::Read {
-                    mut deferred_device_read,
-                    bus_read,
-                    read_len,
-                    io_port,
-                    address,
-                } => {
-                    let mut buf = 0;
-                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
-                    {
-                        let value = match res {
-                            Ok(()) => buf,
-                            Err(e) => {
-                                self.trace_recv_error(e, "deferred read");
-                                0
-                            }
-                        };
-                        let value = shift_read_value(io_port, read_len, value);
-                        bus_read.complete(&value.as_bytes()[..read_len]);
-                    } else {
-                        self.deferred_action = Some(DeferredAction::Read {
-                            deferred_device_read,
-                            bus_read,
-                            read_len,
-                            io_port,
-                            address,
-                        });
-                    }
-                }
-                DeferredAction::ReadForWrite {
-                    mut deferred_device_read,
-                    bus_write,
-                    write_len,
-                    io_port,
-                    new_value,
-                    address,
-                } => {
-                    let mut buf = 0;
-                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
-                    {
-                        let old_value = match res {
-                            Ok(()) => buf,
-                            Err(e) => {
-                                self.trace_recv_error(e, "deferred read for write");
-                                0
-                            }
-                        };
-                        let merged_value =
-                            combine_old_new_values(io_port, old_value, new_value, write_len);
-                        match self.handle_data_write(merged_value) {
-                            IoResult::Ok => {
-                                bus_write.complete();
-                            }
-                            IoResult::Err(e) => {
-                                self.trace_error(e, "write");
-                                bus_write.complete();
-                            }
-                            IoResult::Defer(deferred_device_write) => {
-                                self.deferred_action = Some(DeferredAction::Write {
-                                    deferred_device_write,
-                                    bus_write,
-                                    value: merged_value,
-                                    address,
-                                });
-                                cx.waker().wake_by_ref();
-                            }
-                        }
-                    } else {
-                        self.deferred_action = Some(DeferredAction::ReadForWrite {
-                            deferred_device_read,
-                            bus_write,
-                            write_len,
-                            io_port,
-                            new_value,
-                            address,
-                        });
-                    }
-                }
-                DeferredAction::Write {
-                    mut deferred_device_write,
-                    bus_write,
-                    value,
-                    address,
-                } => {
-                    if let Poll::Ready(res) = deferred_device_write.poll_write(cx) {
-                        match res {
-                            Ok(()) => {}
-                            Err(e) => {
-                                self.trace_recv_error(e, "deferred write");
-                            }
-                        }
-                        bus_write.complete();
-                    } else {
-                        self.deferred_action = Some(DeferredAction::Write {
-                            deferred_device_write,
-                            bus_write,
-                            value,
-                            address,
-                        });
-                    }
-                }
-            }
-        }
-    }
-}
+//impl PortIoIntercept for GenericPciBus {
+//    fn io_read(&mut self, io_port: u16, data: &mut [u8]) -> IoResult {
+//        if !matches!(data.len(), 1 | 2 | 4) {
+//            return IoResult::Err(IoError::InvalidAccessSize);
+//        }
+//
+//        if !(data.len() == 4 && io_port & 3 == 0
+//            || data.len() == 2 && io_port & 1 == 0
+//            || data.len() == 1)
+//        {
+//            return IoResult::Err(IoError::UnalignedAccess);
+//        }
+//
+//        let mut value = 0;
+//        let res = match io_port {
+//            _ if self.pio_addr.offset_of(io_port).is_some() => self.handle_addr_read(&mut value),
+//            _ if self.pio_data.offset_of(io_port).is_some() => self.handle_data_read(&mut value),
+//            _ => {
+//                return IoResult::Err(IoError::InvalidRegister);
+//            }
+//        };
+//
+//        tracing::trace!(?io_port, ?res, ?data, "io port read");
+//
+//        match res {
+//            IoResult::Ok => {
+//                let value = shift_read_value(io_port, data.len(), value);
+//                data.copy_from_slice(&value.as_bytes()[..data.len()]);
+//                IoResult::Ok
+//            }
+//            IoResult::Err(e) => {
+//                self.trace_error(e, "read");
+//                // Regardless of the pci error that occurred we return all zeros.
+//                // This is technically device-specific behavior, but it's what all
+//                // hyper-v devices do and it's worked for us so far.
+//                data.zero();
+//                IoResult::Ok
+//            }
+//            IoResult::Defer(deferred_device_read) => {
+//                let (bus_read, bus_token) = defer_read();
+//                assert!(self.deferred_action.is_none());
+//                self.deferred_action = Some(DeferredAction::Read {
+//                    deferred_device_read,
+//                    bus_read,
+//                    read_len: data.len(),
+//                    io_port,
+//                    address: self.state.pio_addr_reg.address(),
+//                });
+//                if let Some(waker) = self.waker.take() {
+//                    waker.wake();
+//                }
+//                IoResult::Defer(bus_token)
+//            }
+//        }
+//    }
+//
+//    fn io_write(&mut self, io_port: u16, data: &[u8]) -> IoResult {
+//        if !matches!(data.len(), 1 | 2 | 4) {
+//            return IoResult::Err(IoError::InvalidAccessSize);
+//        }
+//
+//        let new_value = {
+//            let mut temp: u32 = 0;
+//            temp.as_mut_bytes()[..data.len()].copy_from_slice(data);
+//            temp
+//        };
+//
+//        tracing::trace!(?io_port, data = ?new_value, "io port write");
+//
+//        match io_port {
+//            _ if self.pio_addr.offset_of(io_port).is_some() => {
+//                // In theory, only 4-byte accesses are valid here, but
+//                // RedHat Linux modifies the bottom byte of the PCI
+//                // configuration address by using a 1-byte access
+//                let v = if data.len() == 4 {
+//                    new_value
+//                } else {
+//                    let mut old_value = 0;
+//                    self.handle_addr_read(&mut old_value).unwrap();
+//                    match data.len() {
+//                        2 => (old_value & 0xFFFF0000) | (new_value & 0xFFFF),
+//                        1 => (old_value & 0xFFFFFF00) | (new_value & 0xFF),
+//                        _ => unreachable!(),
+//                    }
+//                };
+//
+//                self.handle_addr_write(v)
+//            }
+//            _ if self.pio_data.offset_of(io_port).is_some() => {
+//                let merged_value = if data.len() == 4 {
+//                    new_value
+//                } else {
+//                    // If the access isn't a double word, read in the old data
+//                    // to form a full word.
+//                    //
+//                    // Note that this isn't *really* correct, because reading
+//                    // bits may have a side-effect. Also, writing to bits that
+//                    // weren't actually written to may have side-effects...
+//                    //
+//                    // However, this technique appears to work fine for
+//                    // everything we've encountered so far ¯\_(ツ)_/¯
+//                    let mut old_value = 0;
+//                    match self.handle_data_read(&mut old_value) {
+//                        IoResult::Ok => {
+//                            combine_old_new_values(io_port, old_value, new_value, data.len())
+//                        }
+//                        IoResult::Err(e) => {
+//                            self.trace_error(e, "read for undersized write");
+//                            // Regardless of the pci error that occurred, we return all zeros.
+//                            // This is technically device-specific behavior, but it's what all
+//                            // hyper-v devices do and it's worked for us so far.
+//                            0
+//                        }
+//                        IoResult::Defer(deferred_device_read) => {
+//                            let (bus_write, bus_token) = defer_write();
+//                            assert!(self.deferred_action.is_none());
+//                            self.deferred_action = Some(DeferredAction::ReadForWrite {
+//                                deferred_device_read,
+//                                bus_write,
+//                                write_len: data.len(),
+//                                io_port,
+//                                new_value,
+//                                address: self.state.pio_addr_reg.address(),
+//                            });
+//                            if let Some(waker) = self.waker.take() {
+//                                waker.wake();
+//                            }
+//                            return IoResult::Defer(bus_token);
+//                        }
+//                    }
+//                };
+//
+//                let write_result = self.handle_data_write(merged_value);
+//                match write_result {
+//                    IoResult::Err(e) => {
+//                        self.trace_error(e, "write");
+//                        IoResult::Ok
+//                    }
+//                    IoResult::Ok | IoResult::Defer(_) => {
+//                        // If the write was successful we're all set.
+//                        // If the write is deferred we have no extra work to do after
+//                        // it resolves, unlike with read, so we can just return it and
+//                        // let the motherboard poll.
+//                        write_result
+//                    }
+//                }
+//            }
+//            _ => IoResult::Err(IoError::InvalidRegister),
+//        }
+//    }
+//}
+//
+//impl PollDevice for GenericPciBus {
+//    fn poll_device(&mut self, cx: &mut Context<'_>) {
+//        self.waker = Some(cx.waker().clone());
+//        if let Some(action) = self.deferred_action.take() {
+//            match action {
+//                DeferredAction::Read {
+//                    mut deferred_device_read,
+//                    bus_read,
+//                    read_len,
+//                    io_port,
+//                    address,
+//                } => {
+//                    let mut buf = 0;
+//                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
+//                    {
+//                        let value = match res {
+//                            Ok(()) => buf,
+//                            Err(e) => {
+//                                self.trace_recv_error(e, "deferred read");
+//                                0
+//                            }
+//                        };
+//                        let value = shift_read_value(io_port, read_len, value);
+//                        bus_read.complete(&value.as_bytes()[..read_len]);
+//                    } else {
+//                        self.deferred_action = Some(DeferredAction::Read {
+//                            deferred_device_read,
+//                            bus_read,
+//                            read_len,
+//                            io_port,
+//                            address,
+//                        });
+//                    }
+//                }
+//                DeferredAction::ReadForWrite {
+//                    mut deferred_device_read,
+//                    bus_write,
+//                    write_len,
+//                    io_port,
+//                    new_value,
+//                    address,
+//                } => {
+//                    let mut buf = 0;
+//                    if let Poll::Ready(res) = deferred_device_read.poll_read(cx, buf.as_mut_bytes())
+//                    {
+//                        let old_value = match res {
+//                            Ok(()) => buf,
+//                            Err(e) => {
+//                                self.trace_recv_error(e, "deferred read for write");
+//                                0
+//                            }
+//                        };
+//                        let merged_value =
+//                            combine_old_new_values(io_port, old_value, new_value, write_len);
+//                        match self.handle_data_write(merged_value) {
+//                            IoResult::Ok => {
+//                                bus_write.complete();
+//                            }
+//                            IoResult::Err(e) => {
+//                                self.trace_error(e, "write");
+//                                bus_write.complete();
+//                            }
+//                            IoResult::Defer(deferred_device_write) => {
+//                                self.deferred_action = Some(DeferredAction::Write {
+//                                    deferred_device_write,
+//                                    bus_write,
+//                                    value: merged_value,
+//                                    address,
+//                                });
+//                                cx.waker().wake_by_ref();
+//                            }
+//                        }
+//                    } else {
+//                        self.deferred_action = Some(DeferredAction::ReadForWrite {
+//                            deferred_device_read,
+//                            bus_write,
+//                            write_len,
+//                            io_port,
+//                            new_value,
+//                            address,
+//                        });
+//                    }
+//                }
+//                DeferredAction::Write {
+//                    mut deferred_device_write,
+//                    bus_write,
+//                    value,
+//                    address,
+//                } => {
+//                    if let Poll::Ready(res) = deferred_device_write.poll_write(cx) {
+//                        match res {
+//                            Ok(()) => {}
+//                            Err(e) => {
+//                                self.trace_recv_error(e, "deferred write");
+//                            }
+//                        }
+//                        bus_write.complete();
+//                    } else {
+//                        self.deferred_action = Some(DeferredAction::Write {
+//                            deferred_device_write,
+//                            bus_write,
+//                            value,
+//                            address,
+//                        });
+//                    }
+//                }
+//            }
+//        }
+//    }
+//}
 
 impl MmioIntercept for GenericPciBus {
     fn mmio_read(&mut self, addr: u64, data: &mut [u8]) -> IoResult {
@@ -693,13 +695,15 @@ impl MmioIntercept for GenericPciBus {
         let mut value = 0;
         match self.pci_devices.get_mut(&address) {
             Some((name, device)) => {
-                let res = device.pci_cfg_read(cfg_offset.try_into().unwrap(), &mut value);
+                let rounded_offset = cfg_offset & !3;
+                let res = device.pci_cfg_read(rounded_offset.try_into().unwrap(), &mut value);
                 if let Some(_result) = res {
                     tracing::info!(
                         device = &**name,
                         %address,
                         cfg_offset,
                         value,
+                        len = data.len(),
                         "cfg space read"
                     );
                 } else {
@@ -721,6 +725,7 @@ impl MmioIntercept for GenericPciBus {
             }
         }
 
+        let value = shift_read_value(cfg_offset.try_into().unwrap(), data.len(), value);
         data.copy_from_slice(&value.as_bytes()[..data.len()]);
         IoResult::Ok
     }
@@ -755,13 +760,26 @@ impl MmioIntercept for GenericPciBus {
 
         match self.pci_devices.get_mut(&address) {
             Some((name, device)) => {
-                let res = device.pci_cfg_write(cfg_offset.try_into().unwrap(), new_value);
+
+                let rounded_offset = cfg_offset & !3;
+                let merged_value = if data.len() == 4 {
+                    new_value
+                } else {
+                    let mut temp: u32 = 0;
+                    device.pci_cfg_read(rounded_offset.try_into().unwrap(), &mut temp);
+                    let combined = combine_old_new_values(cfg_offset.try_into().unwrap(), temp, new_value, data.len());
+                    tracing::info!(?rounded_offset, ?temp, ?new_value, len = data.len(), ?combined, "read for write");
+                    combined
+                };
+
+                let res = device.pci_cfg_write(rounded_offset.try_into().unwrap(), merged_value);
                 if let Some(result) = res {
                     tracing::info!(
                         device = &**name,
                         %address,
                         cfg_offset,
-                        new_value,
+                        merged_value,
+                        len = data.len(),
                         "cfg space write"
                     );
                     result
@@ -779,7 +797,7 @@ impl MmioIntercept for GenericPciBus {
                 }
             }
             None => {
-                tracing::trace!(%address, "no device found - dropping");
+                tracing::warn!(%address, "no device found - dropping");
                 IoResult::Ok
             }
         }
