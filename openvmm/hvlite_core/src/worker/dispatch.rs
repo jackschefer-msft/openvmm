@@ -1897,56 +1897,56 @@ impl InitializedVm {
                     .await?;
                 }
 
-                for dev_cfg in cfg.vpci_devices {
-                    let vmbus = match dev_cfg.vtl {
-                        DeviceVtl::Vtl0 => vmbus_server.as_ref().context("vmbus not enabled")?,
-                        DeviceVtl::Vtl1 => anyhow::bail!("not supported"),
-                        DeviceVtl::Vtl2 => vtl2_vmbus_server
-                            .as_ref()
-                            .context("VTL2 vmbus not enabled")?,
-                    };
+                //for dev_cfg in cfg.vpci_devices {
+                //    let vmbus = match dev_cfg.vtl {
+                //        DeviceVtl::Vtl0 => vmbus_server.as_ref().context("vmbus not enabled")?,
+                //        DeviceVtl::Vtl1 => anyhow::bail!("not supported"),
+                //        DeviceVtl::Vtl2 => vtl2_vmbus_server
+                //            .as_ref()
+                //            .context("VTL2 vmbus not enabled")?,
+                //    };
 
-                    let vtl = match dev_cfg.vtl {
-                        DeviceVtl::Vtl0 => Vtl::Vtl0,
-                        DeviceVtl::Vtl1 => Vtl::Vtl1,
-                        DeviceVtl::Vtl2 => Vtl::Vtl2,
-                    };
+                //    let vtl = match dev_cfg.vtl {
+                //        DeviceVtl::Vtl0 => Vtl::Vtl0,
+                //        DeviceVtl::Vtl1 => Vtl::Vtl1,
+                //        DeviceVtl::Vtl2 => Vtl::Vtl2,
+                //    };
 
-                    vmm_core::device_builder::build_vpci_device(
-                        &driver_source,
-                        &resolver,
-                        &gm,
-                        vmbus.control(),
-                        dev_cfg.instance_id,
-                        dev_cfg.resource,
-                        &mut chipset_builder,
-                        partition.clone().into_doorbell_registration(vtl),
-                        Some(&mapper),
-                        |device_id| {
-                            let hv_device = partition.new_virtual_device(
-                                match dev_cfg.vtl {
-                                    DeviceVtl::Vtl0 => Vtl::Vtl0,
-                                    DeviceVtl::Vtl1 => Vtl::Vtl1,
-                                    DeviceVtl::Vtl2 => Vtl::Vtl2,
-                                },
-                                device_id,
-                            )?;
-                            Ok((
-                                hv_device.clone().target(),
-                                hv_device.clone().interrupt_mapper(),
-                            ))
-                        },
-                    )
-                    .await?;
-                }
+                //    vmm_core::device_builder::build_vpci_device(
+                //        &driver_source,
+                //        &resolver,
+                //        &gm,
+                //        vmbus.control(),
+                //        dev_cfg.instance_id,
+                //        dev_cfg.resource,
+                //        &mut chipset_builder,
+                //        partition.clone().into_doorbell_registration(vtl),
+                //        Some(&mapper),
+                //        |device_id| {
+                //            let hv_device = partition.new_virtual_device(
+                //                match dev_cfg.vtl {
+                //                    DeviceVtl::Vtl0 => Vtl::Vtl0,
+                //                    DeviceVtl::Vtl1 => Vtl::Vtl1,
+                //                    DeviceVtl::Vtl2 => Vtl::Vtl2,
+                //                },
+                //                device_id,
+                //            )?;
+                //            Ok((
+                //                hv_device.clone().target(),
+                //                hv_device.clone().interrupt_mapper(),
+                //            ))
+                //        },
+                //    )
+                //    .await?;
+                //}
 
                 #[cfg(all(windows, feature = "virt_whp"))]
                 for resource in cfg.vpci_resources {
-                    let vmbus = vmbus_server
-                        .as_ref()
-                        .context("vmbus must be enabled to assign devices")?
-                        .control()
-                        .as_ref();
+                    //let vmbus = vmbus_server
+                    //    .as_ref()
+                    //    .context("vmbus must be enabled to assign devices")?
+                    //    .control()
+                    //    .as_ref();
 
                     // TODO: abstract this behind the trait object properly.
                     let pd = partition.as_any();
@@ -1959,28 +1959,29 @@ impl InitializedVm {
                             .context("failed to get physical device for assignment")?,
                     );
 
-                    let device = chipset_builder
+                    chipset_builder
                         .arc_mutex_device(device_name)
-                        .with_external_pci()
-                        .try_add(|_services| {
-                            virt_whp::device::AssignedPciDevice::new(hv_device.clone())
+                        .on_pci_bus(pci_bus_id_generic.clone())
+                        .with_pci_addr(0, 0, 0)
+                        .try_add(|services| {
+                            virt_whp::device::AssignedPciDevice::new(&mut services.register_mmio(), hv_device.clone())
                         })
                         .context("failed to assign device")?;
 
-                    chipset_builder
-                        .arc_mutex_device(vpci_bus_name)
-                        .try_add_async(async |services| {
-                            VpciBus::new(
-                                &driver_source,
-                                instance_id,
-                                device,
-                                &mut services.register_mmio(),
-                                vmbus,
-                                crate::partition::VpciDevice::interrupt_mapper(hv_device),
-                            )
-                            .await
-                        })
-                        .await?;
+                    //chipset_builder
+                    //    .arc_mutex_device(vpci_bus_name)
+                    //    .try_add_async(async |services| {
+                    //        VpciBus::new(
+                    //            &driver_source,
+                    //            instance_id,
+                    //            device,
+                    //            &mut services.register_mmio(),
+                    //            vmbus,
+                    //            crate::partition::VpciDevice::interrupt_mapper(hv_device),
+                    //        )
+                    //        .await
+                    //    })
+                    //    .await?;
                 }
             } else {
                 for dev_cfg in cfg.vpci_devices {

@@ -228,7 +228,7 @@ pub enum PartitionProperty<'a> {
     CpuWeight(u32),
     CpuGroupId(u64),
     ProcessorFrequencyCap(u32),
-    AllowDeviceAssignment(bool),
+    AllowDeviceAssignment(u32),
     DisableSmt(bool),
     ProcessorFeatures(ProcessorFeatures),
     ProcessorClFlushSize(u8),

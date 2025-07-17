@@ -159,6 +159,113 @@ unsafe extern "system" {
     ) -> HRESULT;
 
     pub fn WHvUnmapGpaRange(_: WHV_PARTITION_HANDLE, addr: u64, size: u64) -> HRESULT;
+
+    pub fn WHvAllocateVpciResource(
+        ProviderId: Option<&GUID>,
+        Flags: WHV_ALLOCATE_VPCI_RESOURCE_FLAGS,
+        ResourceDescriptor: *const c_void,
+        ResourceDescriptorSizeInBytes: u32,
+        VpciResource: *mut HANDLE,
+    ) -> HRESULT;
+
+    pub fn WHvCreateVpciDevice(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        VpciResource: HANDLE,
+        Flags: WHV_CREATE_VPCI_DEVICE_FLAGS,
+        NotificationEventHandle: HANDLE,
+    ) -> HRESULT;
+
+    pub fn WHvDeleteVpciDevice(Partition: WHV_PARTITION_HANDLE, LogicalDeviceId: u64) -> HRESULT;
+
+    pub fn WHvGetVpciDeviceProperty(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        PropertyCode: WHV_VPCI_DEVICE_PROPERTY_CODE,
+        PropertyBuffer: *mut c_void,
+        PropertyBufferSizeInBytes: u32,
+        WrittenSizeInBytes: *mut u32,
+    ) -> HRESULT;
+
+    pub fn WHvGetVpciDeviceNotification(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        Notification: *mut WHV_VPCI_DEVICE_NOTIFICATION,
+        NotificationSizeInBytes: u32,
+    ) -> HRESULT;
+
+    pub fn WHvMapVpciDeviceMmioRanges(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        MappingCount: *mut u32,
+        Mappings: *mut *const WHV_VPCI_MMIO_MAPPING,
+    ) -> HRESULT;
+
+    pub fn WHvUnmapVpciDeviceMmioRanges(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+    ) -> HRESULT;
+
+    pub fn WHvSetVpciDevicePowerState(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        PowerState: DEVICE_POWER_STATE,
+    ) -> HRESULT;
+
+    pub fn WHvReadVpciDeviceRegister(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        Register: &WHV_VPCI_DEVICE_REGISTER,
+        Data: *mut c_void,
+    ) -> HRESULT;
+
+    pub fn WHvWriteVpciDeviceRegister(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        Register: &WHV_VPCI_DEVICE_REGISTER,
+        Data: *const c_void,
+    ) -> HRESULT;
+
+    pub fn WHvMapVpciDeviceInterrupt(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        Index: u32,
+        MessageCount: u32,
+        Target: *const WHV_VPCI_INTERRUPT_TARGET,
+        MsiAddress: *mut u64,
+        MsiData: *mut u32,
+    ) -> HRESULT;
+
+    pub fn WHvUnmapVpciDeviceInterrupt(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        Index: u32,
+    ) -> HRESULT;
+
+    pub fn WHvRetargetVpciDeviceInterrupt(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        MsiAddress: u64,
+        MsiData: u32,
+        Target: *const WHV_VPCI_INTERRUPT_TARGET,
+    ) -> HRESULT;
+
+    pub fn WHvRequestVpciDeviceInterrupt(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        MsiAddress: u64,
+        MsiData: u32,
+    ) -> HRESULT;
+
+    pub fn WHvGetVpciDeviceInterruptTarget(
+        Partition: WHV_PARTITION_HANDLE,
+        LogicalDeviceId: u64,
+        Index: u32,
+        MultiMessageNumber: u32,
+        Target: *mut WHV_VPCI_INTERRUPT_TARGET,
+        TargetSizeInBytes: u32,
+        BytesWritten: *mut u32,
+    ) -> HRESULT;
 }
 
 // These APIs were added after the first release and so may not be present.
@@ -314,112 +421,6 @@ delayload! {
         PropertyCount: u32,
     ) -> HRESULT;
 
-    pub fn WHvAllocateVpciResource(
-        ProviderId: Option<&GUID>,
-        Flags: WHV_ALLOCATE_VPCI_RESOURCE_FLAGS,
-        ResourceDescriptor: *const c_void,
-        ResourceDescriptorSizeInBytes: u32,
-        VpciResource: *mut HANDLE,
-    ) -> HRESULT;
-
-    pub fn WHvCreateVpciDevice(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        VpciResource: HANDLE,
-        Flags: WHV_CREATE_VPCI_DEVICE_FLAGS,
-        NotificationEventHandle: HANDLE,
-    ) -> HRESULT;
-
-    pub fn WHvDeleteVpciDevice(Partition: WHV_PARTITION_HANDLE, LogicalDeviceId: u64) -> HRESULT;
-
-    pub fn WHvGetVpciDeviceProperty(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        PropertyCode: WHV_VPCI_DEVICE_PROPERTY_CODE,
-        PropertyBuffer: *mut c_void,
-        PropertyBufferSizeInBytes: u32,
-        WrittenSizeInBytes: *mut u32,
-    ) -> HRESULT;
-
-    pub fn WHvGetVpciDeviceNotification(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        Notification: *mut WHV_VPCI_DEVICE_NOTIFICATION,
-        NotificationSizeInBytes: u32,
-    ) -> HRESULT;
-
-    pub fn WHvMapVpciDeviceMmioRanges(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        MappingCount: *mut u32,
-        Mappings: *mut *const WHV_VPCI_MMIO_MAPPING,
-    ) -> HRESULT;
-
-    pub fn WHvUnmapVpciDeviceMmioRanges(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-    ) -> HRESULT;
-
-    pub fn WHvSetVpciDevicePowerState(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        PowerState: DEVICE_POWER_STATE,
-    ) -> HRESULT;
-
-    pub fn WHvReadVpciDeviceRegister(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        Register: &WHV_VPCI_DEVICE_REGISTER,
-        Data: *mut c_void,
-    ) -> HRESULT;
-
-    pub fn WHvWriteVpciDeviceRegister(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        Register: &WHV_VPCI_DEVICE_REGISTER,
-        Data: *const c_void,
-    ) -> HRESULT;
-
-    pub fn WHvMapVpciDeviceInterrupt(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        Index: u32,
-        MessageCount: u32,
-        Target: *const WHV_VPCI_INTERRUPT_TARGET,
-        MsiAddress: *mut u64,
-        MsiData: *mut u32,
-    ) -> HRESULT;
-
-    pub fn WHvUnmapVpciDeviceInterrupt(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        Index: u32,
-    ) -> HRESULT;
-
-    pub fn WHvRetargetVpciDeviceInterrupt(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        MsiAddress: u64,
-        MsiData: u32,
-        Target: *const WHV_VPCI_INTERRUPT_TARGET,
-    ) -> HRESULT;
-
-    pub fn WHvRequestVpciDeviceInterrupt(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        MsiAddress: u64,
-        MsiData: u32,
-    ) -> HRESULT;
-
-    pub fn WHvGetVpciDeviceInterruptTarget(
-        Partition: WHV_PARTITION_HANDLE,
-        LogicalDeviceId: u64,
-        Index: u32,
-        MultiMessageNumber: u32,
-        Target: *mut WHV_VPCI_INTERRUPT_TARGET,
-        TargetSizeInBytes: u32,
-        BytesWritten: *mut u32,
-    ) -> HRESULT;
 
     pub fn WHvCreateTrigger(
         Partition: WHV_PARTITION_HANDLE,

@@ -42,7 +42,7 @@ pp! {
     (CpuWeight, WHvPartitionPropertyCodeCpuWeight, u32),
     (CpuGroupId, WHvPartitionPropertyCodeCpuGroupId, u64),
     (ProcessorFrequencyCap, WHvPartitionPropertyCodeProcessorFrequencyCap, u32),
-    (AllowDeviceAssignment, WHvPartitionPropertyCodeAllowDeviceAssignment, bool),
+    (AllowDeviceAssignment, WHvPartitionPropertyCodeAllowDeviceAssignment, u32),
     (DisableSmt, WHvPartitionPropertyCodeDisableSmt, bool),
 
     (ProcessorFeatures, WHvPartitionPropertyCodeProcessorFeatures, abi::WHV_PROCESSOR_FEATURES),

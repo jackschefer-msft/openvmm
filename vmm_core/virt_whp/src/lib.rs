@@ -1352,7 +1352,7 @@ impl VtlPartition {
 
             if hv_config.allow_device_assignment {
                 whp_config
-                    .set_property(whp::PartitionProperty::AllowDeviceAssignment(true))
+                    .set_property(whp::PartitionProperty::AllowDeviceAssignment(1))
                     .for_op("allow device assignment")?;
             }
         }
