@@ -165,6 +165,7 @@ valid disk kinds:
 flags:
     `ro`                           open disk as read-only
     `vtl2`                         assign this disk to VTL2
+    `pcie`                         assigns this disk over PCIe
 "#)]
     #[clap(long)]
     pub nvme: Vec<DiskCli>,
@@ -358,10 +359,19 @@ flags:
     #[clap(long)]
     pub single_process: bool,
 
-    /// device to assign (can be passed multiple times)
+    /// device to directly assign (can be passed multiple times)
     #[cfg(windows)]
-    #[clap(long, value_name = "PATH")]
-    pub device: Vec<String>,
+    #[clap(long_help = r#"
+e.g: --device INSTANCE_ID
+
+syntax: \<INSTANCE_ID\>[,pcie=ssss:bb:dd.f]
+
+options:
+    `pcie=ssss:bb:dd.f`            assign the device using emulated PCIe with the
+                                   provided virtual RID.
+"#)]
+    #[clap(long, value_name = "INSTANCE_ID")]
+    pub device: Vec<AssignedDeviceCli>,
 
     /// instead of showing the frontpage the VM will shutdown instead
     #[clap(long, requires("uefi"))]
@@ -872,6 +882,7 @@ pub struct DiskCli {
     pub read_only: bool,
     pub is_dvd: bool,
     pub underhill: Option<UnderhillDiskSource>,
+    pub is_pcie: bool,
 }
 
 #[derive(Copy, Clone)]
@@ -889,6 +900,7 @@ impl FromStr for DiskCli {
 
         let mut read_only = false;
         let mut is_dvd = false;
+        let mut is_pcie = false;
         let mut underhill = None;
         let mut vtl = DeviceVtl::Vtl0;
         for opt in opts {
@@ -905,6 +917,7 @@ impl FromStr for DiskCli {
                 }
                 "uh" => underhill = Some(UnderhillDiskSource::Scsi),
                 "uh-nvme" => underhill = Some(UnderhillDiskSource::Nvme),
+                "pcie" => is_pcie = true,
                 opt => anyhow::bail!("unknown option: '{opt}'"),
             }
         }
@@ -919,6 +932,7 @@ impl FromStr for DiskCli {
             read_only,
             is_dvd,
             underhill,
+            is_pcie,
         })
     }
 }
@@ -1198,6 +1212,39 @@ impl FromStr for NicConfigCli {
             endpoint,
             max_queues,
             underhill,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct AssignedDeviceCli {
+    pub instance_id: String,
+    pub pcie_rid: Option<pcie::Rid>,
+}
+
+impl FromStr for AssignedDeviceCli {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let mut opts = s.split(',');
+        let instance_id = opts.next().context("expected device instance ID")?;
+
+        let mut pcie_rid = None;
+        for opt in opts {
+            let mut s = opt.split('=');
+            let opt = s.next().context("expected option")?;
+            match opt {
+                "pcie" => {
+                    let rid_str = s.next().context("expected a RID")?;
+                    pcie_rid = Some(pcie::Rid::from_str(rid_str).context("failed to parse RID")?)
+                },
+                opt => anyhow::bail!("unknown option: '{opt}'"),
+            }
+        }
+
+        Ok(AssignedDeviceCli {
+            instance_id: instance_id.to_string(),
+            pcie_rid,
         })
     }
 }

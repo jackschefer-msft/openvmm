@@ -2562,6 +2562,7 @@ async fn new_underhill_vm(
         deps_generic_isa_dma,
         deps_generic_isa_floppy: None,
         deps_generic_pci_bus: None,
+        deps_generic_pcie_root_complex: None,
         deps_generic_pic,
         deps_generic_pit,
         deps_hyperv_firmware_pcat,

@@ -26,6 +26,7 @@ pub struct Config {
     pub floppy_disks: Vec<floppy_resources::FloppyDiskConfig>,
     pub ide_disks: Vec<ide_resources::IdeDeviceConfig>,
     pub vpci_devices: Vec<VpciDeviceConfig>,
+    pub pcie_devices: Vec<PcieDeviceConfig>,
     pub memory: MemoryConfig,
     pub processor_topology: ProcessorTopologyConfig,
     pub hypervisor: HypervisorConfig,
@@ -168,6 +169,13 @@ pub struct VpciDeviceConfig {
     /// The ID of the device. Vpci devices are identified by a portion of `data2` and `data3` of the
     /// instance ID, which is used to generate the guest-visible device ID.
     pub instance_id: Guid,
+    pub resource: Resource<PciDeviceHandleKind>,
+}
+
+#[derive(Debug, MeshPayload)]
+pub struct PcieDeviceConfig {
+    // PCIE_TODO: Attached VTL
+    pub rid: pcie::Rid,
     pub resource: Resource<PciDeviceHandleKind>,
 }
 

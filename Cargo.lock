@@ -3027,6 +3027,8 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pci_resources",
+ "pcie",
  "range_map_vec",
  "scsi_core",
  "scsidisk",
@@ -3081,6 +3083,7 @@ dependencies = [
  "mesh",
  "mesh_worker",
  "net_backend_resources",
+ "pcie",
  "thiserror 2.0.12",
  "unix_socket",
  "virt",
@@ -4990,6 +4993,7 @@ dependencies = [
  "pal",
  "pal_async",
  "parking_lot",
+ "pcie",
  "prost",
  "rustyline",
  "scsidisk_resources",
@@ -5373,6 +5377,19 @@ dependencies = [
  "guestmem",
  "pci_core",
  "vm_resource",
+ "vmcore",
+]
+
+[[package]]
+name = "pcie"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chipset_device",
+ "inspect",
+ "mesh",
+ "pci_bus",
+ "tracing",
  "vmcore",
 ]
 
@@ -8907,6 +8924,7 @@ dependencies = [
  "parking_lot",
  "pci_core",
  "pci_resources",
+ "pcie",
  "power_resources",
  "slab",
  "state_unit",
@@ -9029,6 +9047,7 @@ dependencies = [
  "parking_lot",
  "paste",
  "pci_bus",
+ "pcie",
  "range_map_vec",
  "state_unit",
  "thiserror 2.0.12",

@@ -322,3 +322,37 @@ impl std::fmt::Display for PciConflict {
         }
     }
 }
+
+#[derive(Debug)]
+pub enum PcieConflictReason {
+    ExistingDev(Arc<str>),
+    MissingBus,
+}
+
+#[derive(Debug)]
+pub struct PcieConflict {
+    pub rid: pcie::Rid,
+    pub conflict_dev: Arc<str>,
+    pub reason: PcieConflictReason,
+}
+
+impl std::fmt::Display for PcieConflict {
+    fn fmt(&self, fmt: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.reason {
+            PcieConflictReason::ExistingDev(existing_dev) => {
+                write!(
+                    fmt,
+                    "cannot attach {} to {}, already occupied by {}",
+                    self.conflict_dev, self.rid, existing_dev
+                )
+            }
+            PcieConflictReason::MissingBus => {
+                write!(
+                    fmt,
+                    "cannot attach {} to {}, not valid in PCIe hierarchy",
+                    self.conflict_dev, self.rid
+                )
+            }
+        }
+    }
+}

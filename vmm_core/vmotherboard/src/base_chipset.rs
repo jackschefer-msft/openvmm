@@ -207,6 +207,7 @@ impl<'a> BaseChipsetBuilder<'a> {
             deps_generic_isa_dma,
             deps_generic_isa_floppy,
             deps_generic_pci_bus,
+            deps_generic_pcie_root_complex,
             deps_generic_pic,
             deps_generic_pit,
             deps_generic_psp: _, // not actually a device... yet
@@ -268,6 +269,24 @@ impl<'a> BaseChipsetBuilder<'a> {
             })?;
 
             builder.register_weak_mutex_pci_bus(bus_id, Box::new(pci));
+        }
+
+        // PCIE_TODO: multiple/additional root complexes, configurable
+        // by commandline.
+        if let Some(options::dev::GenericPcieRootComplexDeps {
+            bus_id,
+            description,
+            ecam_base,
+        }) = deps_generic_pcie_root_complex
+        {
+            let pci = builder.arc_mutex_device("pcie_rc").add(|services| {
+                pcie::RootComplexEmulator::new(
+                    &mut services.register_mmio(),
+                    description,
+                    ecam_base)
+            })?;
+
+            builder.register_weak_mutex_pcie_root_complex(bus_id, Box::new(pci));
         }
 
         if let Some(options::dev::Piix4PciBusDeps { bus_id }) = deps_piix4_pci_bus {
@@ -797,7 +816,10 @@ impl ConfigureChipsetDevice for ArcMutexChipsetServices<'_, '_> {
 mod weak_mutex_pci {
     use crate::chipset::PciConflict;
     use crate::chipset::PciConflictReason;
+    use crate::chipset::PcieConflict;
+    use crate::chipset::PcieConflictReason;
     use crate::chipset::backing::arc_mutex::pci::RegisterWeakMutexPci;
+    use crate::chipset::backing::arc_mutex::pcie::RegisterWeakMutexPcie;
     use chipset_device::ChipsetDevice;
     use chipset_device::io::IoResult;
     use closeable_mutex::CloseableMutex;
@@ -881,6 +903,28 @@ mod weak_mutex_pci {
                 .map_err(|(_, existing_dev)| PciConflict {
                     bdf: (bus, device, function),
                     reason: PciConflictReason::ExistingDev(existing_dev),
+                    conflict_dev: name,
+                })
+        }
+    }
+
+    // wiring to enable using the PCIe root complex emulator alongside the Arc+CloseableMutex device infra
+    impl RegisterWeakMutexPcie for Arc<CloseableMutex<pcie::RootComplexEmulator>> {
+        fn add_pcie_function(
+            &mut self,
+            rid: pcie::Rid,
+            name: Arc<str>,
+            dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
+        ) -> Result<(), PcieConflict> {
+            self.lock()
+                .add_pcie_function(
+                    rid,
+                    name.clone(),
+                    WeakMutexPciDeviceWrapper(dev),
+                )
+                .map_err(|(_, existing_dev)| PcieConflict {
+                    rid,
+                    reason: PcieConflictReason::ExistingDev(existing_dev),
                     conflict_dev: name,
                 })
         }
@@ -1049,6 +1093,7 @@ pub mod options {
             generic_isa_dma:             dev::GenericIsaDmaDeps,
             generic_isa_floppy:          dev::GenericIsaFloppyDeps,
             generic_pci_bus:             dev::GenericPciBusDeps,
+            generic_pcie_root_complex:   dev::GenericPcieRootComplexDeps,
             generic_pic:                 dev::GenericPicDeps,
             generic_pit:                 dev::GenericPitDeps,
             generic_psp:                 dev::GenericPspDeps,
@@ -1080,6 +1125,7 @@ pub mod options {
     pub mod dev {
         use super::*;
         use crate::BusIdPci;
+        use crate::BusIdPcie;
         use chipset_resources::battery::HostBatteryUpdate;
         use local_clock::InspectableLocalClock;
 
@@ -1208,6 +1254,16 @@ pub mod options {
             pub pio_addr: u16,
             /// Port io address of the 32-bit PCI DATA register
             pub pio_data: u16,
+        }
+
+        /// Generic PCIe root complex.
+        pub struct GenericPcieRootComplexDeps {
+            /// `vmotherboard` bus identifier
+            pub bus_id: BusIdPcie,
+            /// The static configuration for the root complex.
+            pub description: pcie::RootComplexDescription,
+            /// Base address of the ECAM MMIO region used for config space.
+            pub ecam_base: u64,
         }
 
         /// PIIX4 PCI Bus

@@ -31,6 +31,18 @@ pub struct BuiltAcpiTables {
     pub tables: Vec<u8>,
 }
 
+/// ACPI definition for a PCIe root complex.
+pub struct PcieRootComplexDefinition {
+    /// PCIe segment ID.
+    pub segment_id: u16,
+    /// Lowest valid bus number.
+    pub start_bus: u8,
+    /// Highest valid bus number.
+    pub end_bus: u8,
+    /// Base address of the ECAM region.
+    pub ecam_base: u64,
+}
+
 /// Builder to construct a set of [`BuiltAcpiTables`]
 pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     /// The processor topology.
@@ -40,6 +52,10 @@ pub struct AcpiTablesBuilder<'a, T: AcpiTopology> {
     pub processor_topology: &'a ProcessorTopology<T>,
     /// The memory layout of the VM.
     pub mem_layout: &'a MemoryLayout,
+    // PCIe root complexes of the VM.
+    //
+    /// If and only if this elements, the MCFG table will be generated.
+    pub pcie_root_complexes: &'a Vec<PcieRootComplexDefinition>,
     /// The cache topology of the VM.
     ///
     /// If and only if this is set, then the PPTT table will be generated.
@@ -223,6 +239,30 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
                 flags,
             },
             &[madt_extra.as_slice()],
+        ))
+    }
+
+    fn with_mcfg<F, R>(&self, f: F) -> R
+    where
+        F: FnOnce(&acpi::builder::Table<'_>) -> R,
+    {
+        let mut mcfg_extra: Vec<u8> = Vec::new();
+        for rc in self.pcie_root_complexes {
+            mcfg_extra.extend_from_slice(
+                acpi_spec::mcfg::McfgSegmentBusRange::new(
+                    rc.ecam_base,
+                    rc.segment_id,
+                    rc.start_bus,
+                    rc.end_bus,
+                ).as_bytes()
+            );
+        }
+
+        (f)(&acpi::builder::Table::new_dyn(
+            acpi_spec::mcfg::MCFG_REVISION,
+            None,
+            &acpi_spec::mcfg::McfgHeader::new(),
+            &[mcfg_extra.as_slice()],
         ))
     }
 
@@ -529,6 +569,9 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
 
         self.with_madt(|t| b.append(t));
         self.with_srat(|t| b.append(t));
+        if !self.pcie_root_complexes.is_empty() {
+            self.with_mcfg(|t| b.append(t));
+        }
         if self.cache_topology.is_some() {
             self.with_pptt(|t| b.append(t));
         }
@@ -542,6 +585,12 @@ impl<T: AcpiTopology> AcpiTablesBuilder<'_, T> {
     /// the ACPI tables.
     pub fn build_madt(&self) -> Vec<u8> {
         self.with_madt(|t| t.to_vec(&OEM_INFO))
+    }
+
+    /// Helper method to construct an MCFG without constructing the rest of
+    /// the ACPI tables.
+    pub fn build_mcfg(&self) -> Vec<u8> {
+        self.with_mcfg(|t| t.to_vec(&OEM_INFO))
     }
 
     /// Helper method to construct an SRAT without constructing the rest of

@@ -12,6 +12,7 @@ use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
+use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::VpciDeviceConfig;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
@@ -34,6 +35,7 @@ pub(super) struct StorageBuilder {
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
+    vtl0_pcie_nvme_namespaces: Vec<NamespaceDefinition>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     openhcl_vtl: Option<DeviceVtl>,
@@ -43,14 +45,14 @@ pub(super) struct StorageBuilder {
 pub enum DiskLocation {
     Ide(Option<u8>, Option<u8>),
     Scsi(Option<u8>),
-    Nvme(Option<u32>),
+    Nvme(Option<u32>, bool),
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
     fn from(value: UnderhillDiskSource) -> Self {
         match value {
             UnderhillDiskSource::Scsi => Self::Scsi(None),
-            UnderhillDiskSource::Nvme => Self::Nvme(None),
+            UnderhillDiskSource::Nvme => Self::Nvme(None, false),
         }
     }
 }
@@ -72,6 +74,7 @@ impl StorageBuilder {
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
             vtl2_nvme_namespaces: Vec::new(),
+            vtl0_pcie_nvme_namespaces: Vec::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
             openhcl_vtl,
@@ -188,11 +191,13 @@ impl StorageBuilder {
                 });
                 Some(lun.into())
             }
-            DiskLocation::Nvme(nsid) => {
-                let namespaces = match vtl {
-                    DeviceVtl::Vtl0 => &mut self.vtl0_nvme_namespaces,
-                    DeviceVtl::Vtl1 => anyhow::bail!("vtl1 unsupported"),
-                    DeviceVtl::Vtl2 => &mut self.vtl2_nvme_namespaces,
+            DiskLocation::Nvme(nsid, is_pcie) => {
+                let namespaces = match (vtl, is_pcie) {
+                    (DeviceVtl::Vtl0, true) => &mut self.vtl0_pcie_nvme_namespaces,
+                    (DeviceVtl::Vtl0, false) => &mut self.vtl0_nvme_namespaces,
+                    (DeviceVtl::Vtl1, _) => anyhow::bail!("vtl1 unsupported"),
+                    (DeviceVtl::Vtl2, true) => anyhow::bail!("pcie only supported to vtl0"),
+                    (DeviceVtl::Vtl2, false) => &mut self.vtl2_nvme_namespaces,
                 };
                 if is_dvd {
                     anyhow::bail!("dvd not supported with nvme");
@@ -232,7 +237,8 @@ impl StorageBuilder {
                     SCSI_VTL0_INSTANCE_ID
                 },
             ),
-            DiskLocation::Nvme(_) => (
+            DiskLocation::Nvme(_, true) => anyhow::bail!("pcie not supported for Underhill"),
+            DiskLocation::Nvme(_, false) => (
                 vtl2_settings_proto::physical_device::DeviceType::Nvme,
                 if vtl == DeviceVtl::Vtl2 {
                     NVME_VTL2_INSTANCE_ID
@@ -251,7 +257,8 @@ impl StorageBuilder {
                 let lun = lun.unwrap_or(self.underhill_scsi_luns.len() as u8);
                 (&mut self.underhill_scsi_luns, lun.into())
             }
-            DiskLocation::Nvme(nsid) => {
+            DiskLocation::Nvme(_, true) => anyhow::bail!("pcie not supported for Underhill"),
+            DiskLocation::Nvme(nsid, false) => {
                 let nsid = nsid.unwrap_or(self.underhill_nvme_luns.len() as u32 + 1);
                 (&mut self.underhill_nvme_luns, nsid)
             }
@@ -350,6 +357,26 @@ impl StorageBuilder {
             {
                 *vpci_boot = true;
             }
+        }
+
+        if !self.vtl0_pcie_nvme_namespaces.is_empty() {
+            // PCIE_TODO: We should allow the user to configure multiple controllers with their own
+            // virtual RIDs, but the storage builder is not currently equipped to configure per-controller
+            // settings like that, only per-disk (namespace) settings. For now, just hardcode all the
+            // controller settings as is done for VPCI NVMe controllers.
+            config.pcie_devices.push(PcieDeviceConfig {
+                rid: pcie::Rid::new(0, 8, 0),
+                resource: NvmeControllerHandle {
+                    subsystem_id: guid::guid!("b5cc9bac-8c48-4514-8cd1-4a38b542abd8"),
+                    namespaces: std::mem::take(&mut self.vtl0_pcie_nvme_namespaces),
+                    max_io_queues: 64,
+                    msix_count: 64,
+                }
+                .into_resource(),
+            });
+
+            // PCIE_TODO: Figure out whether we need to tell UEFI about PCIe
+            // devices for the purposes of boot selection like we do for VPCI.
         }
 
         if !self.vtl2_nvme_namespaces.is_empty() {

@@ -501,8 +501,12 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        is_pcie,
     } in &opt.disk
     {
+        if is_pcie {
+            anyhow::bail!("scsi disks do not support pcie");
+        }
         storage.add(
             vtl,
             underhill,
@@ -537,12 +541,13 @@ fn vm_config_from_command_line(
         read_only,
         is_dvd,
         underhill,
+        is_pcie,
     } in &opt.nvme
     {
         storage.add(
             vtl,
             underhill,
-            storage_builder::DiskLocation::Nvme(None),
+            storage_builder::DiskLocation::Nvme(None, is_pcie),
             kind,
             is_dvd,
             read_only,
@@ -1304,6 +1309,7 @@ fn vm_config_from_command_line(
         load_mode,
         floppy_disks,
         vpci_devices,
+        pcie_devices: vec![],
         ide_disks: Vec::new(),
         memory: MemoryConfig {
             mem_size: opt.memory,

@@ -7,6 +7,7 @@ use self::device_range::DeviceRangeMapper;
 use super::device::ArcMutexChipsetServicesFinalize;
 use super::state_unit::ArcMutexChipsetDeviceUnit;
 use crate::BusIdPci;
+use crate::BusIdPcie;
 use crate::ChipsetBuilder;
 use crate::VmmChipsetDevice;
 use crate::chipset::line_sets::LineSetTargetDevice;
@@ -175,6 +176,15 @@ impl<'a, 'b> ArcMutexChipsetServices<'a, 'b> {
         self.builder.register_weak_mutex_pci_device(
             bus_id,
             bdf,
+            self.dev_name.clone(),
+            self.dev.clone(),
+        );
+    }
+
+    pub fn register_static_pcie(&mut self, bus_id: BusIdPcie, rid: pcie::Rid) {
+        self.builder.register_weak_mutex_pcie_function(
+            bus_id,
+            rid,
             self.dev_name.clone(),
             self.dev.clone(),
         );

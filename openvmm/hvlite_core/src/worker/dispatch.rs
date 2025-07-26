@@ -33,6 +33,7 @@ use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieDeviceConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
 use hvlite_defs::config::VirtioBus;
@@ -125,6 +126,7 @@ use vmcore::vmtime::VmTimeSource;
 use vmgs_broker::resolver::VmgsFileResolver;
 use vmgs_resources::VmgsResource;
 use vmm_core::acpi_builder::AcpiTablesBuilder;
+use vmm_core::acpi_builder::PcieRootComplexDefinition;
 use vmm_core::input_distributor::InputDistributor;
 use vmm_core::partition_unit::Halt;
 use vmm_core::partition_unit::PartitionUnit;
@@ -165,6 +167,7 @@ impl Manifest {
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
             vpci_devices: config.vpci_devices,
+            pcie_devices: config.pcie_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
             processor_topology: config.processor_topology,
@@ -204,6 +207,7 @@ pub struct Manifest {
     load_mode: LoadMode,
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
+    pcie_devices: Vec<PcieDeviceConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -518,6 +522,7 @@ struct LoadedVmInner {
     _kernel_vmnics: Vec<vmswitch::kernel::KernelVmNic>,
     memory_cfg: MemoryConfig,
     mem_layout: MemoryLayout,
+    pcie_root_complexes: Vec<PcieRootComplexDefinition>,
     processor_topology: ProcessorTopology,
     hypervisor_cfg: HypervisorConfig,
     vmbus_redirect: bool,
@@ -1045,6 +1050,7 @@ impl InitializedVm {
         ));
 
         let mapper = memory_manager.device_memory_mapper();
+        let mut pcie_root_complexes = vec![];
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -1141,6 +1147,7 @@ impl InitializedVm {
                         let acpi_tables_builder = AcpiTablesBuilder {
                             processor_topology: &processor_topology,
                             mem_layout: &mem_layout,
+                            pcie_root_complexes: &pcie_root_complexes,
                             cache_topology: None,
                             with_ioapic: cfg.chipset.with_generic_ioapic,
                             with_pic: cfg.chipset.with_generic_pic,
@@ -1462,6 +1469,30 @@ impl InitializedVm {
                 pio_data: pci_bus::standard_x86_io_ports::DATA_START,
             });
 
+        // PCIE_TODO: get root complex descriptions from CLI/config and
+        // move this creation out of the base chipset.
+        let pcie_bus_id_rc0 = vmotherboard::BusId::new("rc0");
+        let root_complex_description = pcie::RootComplexDescription::new(0, pcie::BusRange::new(0, 255));
+        let deps_generic_pcie_root_complex = (cfg.chipset.with_generic_pcie_root_complex)
+            .then_some(dev::GenericPcieRootComplexDeps {
+                bus_id: pcie_bus_id_rc0.clone(),
+                description: root_complex_description,
+                // PCIE_TODO: allocate MMIO from somewhere
+                ecam_base: 0xc0000000,
+            }
+        );
+
+        // PCIE_TODO: Once this has moved out base chipset, save these while adding
+        // emulators as opposed to duplicating this logic.
+        if cfg.chipset.with_generic_pcie_root_complex {
+            pcie_root_complexes.push(PcieRootComplexDefinition {
+                segment_id: root_complex_description.segment_id,
+                start_bus: root_complex_description.bus_range.start_bus,
+                end_bus: root_complex_description.bus_range.end_bus,
+                ecam_base: 0xc0000000,
+            });
+        }
+
         let deps_generic_pic = (cfg.chipset.with_generic_pic).then_some(dev::GenericPicDeps {});
 
         let deps_generic_pit = (cfg.chipset.with_generic_pit).then_some(dev::GenericPitDeps {});
@@ -1549,6 +1580,7 @@ impl InitializedVm {
                 deps_generic_isa_dma,
                 deps_generic_isa_floppy,
                 deps_generic_pci_bus,
+                deps_generic_pcie_root_complex,
                 deps_generic_pic,
                 deps_generic_pit,
                 deps_generic_psp,
@@ -1976,6 +2008,7 @@ impl InitializedVm {
                         })
                         .context("failed to assign device")?;
 
+                    // PCIE_TODO: Enable WHP over PCIe
                     chipset_builder
                         .arc_mutex_device(vpci_bus_name)
                         .try_add_async(async |services| {
@@ -1991,6 +2024,40 @@ impl InitializedVm {
                         })
                         .await?;
                 }
+            }
+
+            // Add PCIe devices.
+            for dev_cfg in cfg.pcie_devices {
+                // PCIE_TODO
+                //let vtl = match dev_cfg.vtl {
+                //    DeviceVtl::Vtl0 => Vtl::Vtl0,
+                //    DeviceVtl::Vtl1 => Vtl::Vtl1,
+                //    DeviceVtl::Vtl2 => Vtl::Vtl2,
+                //};
+
+                let device_name = format!("{}:pcie-{}", dev_cfg.resource.id(), dev_cfg.rid);
+                let mut msi_set = MsiInterruptSet::new(); // PCIE_TODO
+                chipset_builder
+                    .arc_mutex_device(device_name)
+                    .on_pcie_root_complex(pcie_bus_id_rc0.clone())
+                    .with_pcie_rid(dev_cfg.rid)
+                    .try_add_async(async |services| {
+                        resolver
+                            .resolve(
+                                dev_cfg.resource,
+                                pci_resources::ResolvePciDeviceHandleParams {
+                                    register_msi: &mut msi_set,
+                                    register_mmio: &mut services.register_mmio(),
+                                    driver_source: &driver_source,
+                                    guest_memory: &gm,
+                                    doorbell_registration: partition.clone().into_doorbell_registration(Vtl::Vtl0),
+                                    shared_mem_mapper: Some(&mapper),
+                                },
+                            )
+                            .await
+                            .map(|r| r.0)
+                    })
+                    .await?;
             }
         }
 
@@ -2273,6 +2340,7 @@ impl InitializedVm {
                 hypervisor_cfg: cfg.hypervisor,
                 memory_cfg: cfg.memory,
                 mem_layout,
+                pcie_root_complexes,
                 processor_topology,
                 vmbus_redirect,
                 input_distributor,
@@ -2321,6 +2389,7 @@ impl LoadedVmInner {
         let acpi_builder = AcpiTablesBuilder {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
+            pcie_root_complexes: &self.pcie_root_complexes,
             cache_topology: cache_topology.as_ref(),
             with_ioapic: self.chipset_cfg.with_generic_ioapic,
             with_psp: self.chipset_cfg.with_generic_psp,
@@ -2368,6 +2437,7 @@ impl LoadedVmInner {
                                     self.virtio_mmio_count,
                                     self.virtio_mmio_irq,
                                     &self.pci_legacy_interrupts,
+                                    &self.pcie_root_complexes,
                                 )
                             })
                         };
@@ -2869,6 +2939,7 @@ impl LoadedVm {
             floppy_disks: vec![], // TODO
             ide_disks: vec![],    // TODO
             vpci_devices: vec![], // TODO
+            pcie_devices: vec![], // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),
             chipset: self.inner.chipset_cfg,
@@ -2935,6 +3006,7 @@ fn add_devices_to_dsdt(
     virtio_mmio_count: usize,
     virtio_mmio_irq: u32,
     pci_legacy_interrupts: &[((u8, Option<u8>), u32)], // ((device, function), interrupt)
+    pcie_root_complexes: &Vec<PcieRootComplexDefinition>,
 ) {
     dsdt.add_apic();
 
@@ -2987,14 +3059,23 @@ fn add_devices_to_dsdt(
 
     let high_mmio_gap = MemoryRange::new(high_mmio_space);
 
+    let vmbus_parent: Vec<u8>;
     if cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge {
         // TODO: actually plumb through legacy PCI interrupts
-        dsdt.add_pci(low_mmio_gap, high_mmio_gap, pci_legacy_interrupts);
+        vmbus_parent = dsdt.add_pci(low_mmio_gap, high_mmio_gap, pci_legacy_interrupts);
+    } else if pcie_root_complexes.len() > 0 {
+        // PCIE_TODO: support more than one root complex here.
+        vmbus_parent = dsdt.add_pcie(
+            low_mmio_gap,
+            high_mmio_gap,
+            pcie_root_complexes[0].segment_id,
+            pcie_root_complexes[0].start_bus,
+            pcie_root_complexes[0].end_bus);
     } else {
-        dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
+        vmbus_parent = dsdt.add_mmio_module(low_mmio_gap, high_mmio_gap);
     }
 
-    dsdt.add_vmbus(cfg.with_generic_pci_bus || cfg.with_i440bx_host_pci_bridge);
+    dsdt.add_vmbus(vmbus_parent);
     dsdt.add_rtc();
 }
 

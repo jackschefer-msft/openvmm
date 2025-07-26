@@ -94,10 +94,14 @@ impl<T> BusId<T> {
 pub mod bus_kind {
     #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
     pub enum Pci {}
+    #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+    pub enum Pcie {}
 }
 
 /// Type-safe PCI bus ID.
 pub type BusIdPci = BusId<bus_kind::Pci>;
+/// Type-safe PCIe bus ID.
+pub type BusIdPcie = BusId<bus_kind::Pcie>;
 
 /// A handle to instantiate a chipset device.
 #[derive(MeshPayload, Debug)]

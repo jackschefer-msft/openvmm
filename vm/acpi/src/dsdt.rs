@@ -177,6 +177,7 @@ impl DsdtObject for PciRoutingTable {
 pub struct Dsdt {
     description_header: DescriptionHeader,
     objects: Vec<u8>,
+    root_complex_count: u8,
 }
 
 impl Dsdt {
@@ -194,6 +195,7 @@ impl Dsdt {
                 creator_rev: 0x5000000,
             },
             objects: vec![],
+            root_complex_count: 0,
         }
     }
 
@@ -293,8 +295,10 @@ impl Dsdt {
     ///     })
     /// }
     /// ```
-    pub fn add_mmio_module(&mut self, low: MemoryRange, high: MemoryRange) {
-        let mut vmod = Device::new(b"\\_SB.VMOD");
+    pub fn add_mmio_module(&mut self, low: MemoryRange, high: MemoryRange) -> Vec<u8> {
+        let mut name = Vec::new();
+        name.extend_from_slice(b"\\_SB.VMOD");
+        let mut vmod = Device::new(name.as_slice());
         vmod.add_object(&NamedString::new(b"_HID", b"ACPI0004"));
         vmod.add_object(&NamedInteger::new(b"_UID", 0));
         let mut vmod_crs = CurrentResourceSettings::new();
@@ -302,6 +306,7 @@ impl Dsdt {
         vmod_crs.add_resource(&QwordMemory::new(high.start(), high.end() - high.start()));
         vmod.add_object(&vmod_crs);
         self.add_object(&vmod);
+        name
     }
 
     /// Adds a PCI bus with the specified MMIO ranges.
@@ -330,8 +335,10 @@ impl Dsdt {
         high: MemoryRange,
         // array of ((device, function), line)
         legacy_interrupts: &[((u8, Option<u8>), u32)],
-    ) {
-        let mut pci0 = Device::new(b"\\_SB.PCI0");
+    ) -> Vec<u8> {
+        let mut name = Vec::new();
+        name.extend_from_slice(b"\\_SB.PCI0");
+        let mut pci0 = Device::new(name.as_slice());
         pci0.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0A03")));
         // FUTURE: when implementing PCIe, switch _HID over to "PNP0A08", and a
         // _CID for "PNP0A03"
@@ -361,6 +368,58 @@ impl Dsdt {
         crs.add_resource(&QwordMemory::new(high.start(), high.end() - high.start()));
         pci0.add_object(&crs);
         self.add_object(&pci0);
+        name
+    }
+
+    /// Adds a PCIe root complex with the specified MMIO ranges.
+    ///
+    /// ```text
+    /// Device(\_SB.PCI0)
+    /// {
+    ///     Name(_HID, PNP0A08)
+    ///     Name(_SEG, ...) // Segment number
+    ///     Name(_CRS, ResourceTemplate()
+    ///     {
+    ///         WordBusNumber(...) // Bus translation info
+    ///         QWordMemory() // Low gap
+    ///         QWordMemory() // High gap
+    ///     })
+    /// }
+    /// ```
+    pub fn add_pcie(
+        &mut self,
+        low: MemoryRange,
+        high: MemoryRange,
+        segment: u16,
+        start_bus: u8,
+        end_bus: u8,
+    ) -> Vec<u8> {
+        let mut name = Vec::new();
+        name.extend_from_slice(b"\\_SB.PCI");
+        name.push(('0' as u8) + self.root_complex_count);
+        self.root_complex_count += 1;
+
+        let mut pcie = Device::new(name.as_slice());
+        pcie.add_object(&NamedObject::new(b"_HID", &EisaId(*b"PNP0A08")));
+        pcie.add_object(&NamedObject::new(b"_CID", &EisaId(*b"PNP0A03")));
+        pcie.add_object(&NamedInteger::new(b"_SEG", segment.into()));
+
+        // OS negotiation for control of the bus. See https://uefi.org/specs/ACPI/6.4/e6_Device_Configuration/Device_Configuration.html#osc-operating-system-capabilities
+        // TODO: Lots of work needed for _OSC.
+        let mut empty_os_method = Method::new(b"_OSC");
+        empty_os_method.set_arg_count(4);
+        empty_os_method.add_operation(&ReturnOp {
+            result: Buffer(0x10u64.to_le_bytes()).to_bytes(),
+        });
+        pcie.add_object(&empty_os_method);
+        let mut crs = CurrentResourceSettings::new();
+        crs.add_resource(&BusNumber::new(start_bus.into(), end_bus.into()));
+        crs.add_resource(&QwordMemory::new(low.start(), low.end() - low.start()));
+        crs.add_resource(&QwordMemory::new(high.start(), high.end() - high.start()));
+        pcie.add_object(&crs);
+        self.add_object(&pcie);
+
+        name
     }
 
     /// Add a VMBUS device to the DSDT.
@@ -386,13 +445,9 @@ impl Dsdt {
     ///     Name(_PS3, 0)
     /// }
     /// ```
-    pub fn add_vmbus(&mut self, in_pci: bool) {
-        let name = if in_pci {
-            b"\\_SB.PCI0.VMBS"
-        } else {
-            b"\\_SB.VMOD.VMBS"
-        };
-        let mut vmbs = Device::new(name);
+    pub fn add_vmbus(&mut self, mut parent: Vec<u8>) {
+        parent.extend_from_slice(b".VMBS");
+        let mut vmbs = Device::new(parent.as_slice());
         vmbs.add_object(&NamedInteger::new(b"STA", 0xf));
         vmbs.add_object(&NamedInteger::new(b"_ADR", 0));
         vmbs.add_object(&NamedString::new(b"_DDN", b"VMBUS"));

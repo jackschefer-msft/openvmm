@@ -6,5 +6,6 @@
 
 pub mod device;
 pub mod pci;
+pub mod pcie;
 pub mod services;
 pub mod state_unit;

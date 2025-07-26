@@ -458,6 +458,7 @@ impl VmService {
             ide_disks: vec![],
             floppy_disks: vec![],
             vpci_devices: vec![],
+            pcie_devices: vec![],
             memory: MemoryConfig {
                 mem_size: req_config
                     .memory_config
