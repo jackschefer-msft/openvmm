@@ -14,6 +14,7 @@ use thiserror::Error;
 use vm_loader::Loader;
 use vm_topology::memory::MemoryLayout;
 use vm_topology::processor::ProcessorTopology;
+use vm_topology::pcie::PcieTopology;
 use zerocopy::IntoBytes;
 
 #[derive(Debug, Error)]
@@ -47,9 +48,11 @@ pub fn load_uefi(
     gm: &GuestMemory,
     processor_topology: &ProcessorTopology,
     mem_layout: &MemoryLayout,
+    pcie_topology: &PcieTopology,
     load_settings: UefiLoadSettings,
     madt: &[u8],
     srat: &[u8],
+    mcfg: Option<&[u8]>,
     pptt: Option<&[u8]>,
 ) -> Result<Vec<Register>, Error> {
     if mem_layout.mmio().len() < 2 {
@@ -155,8 +158,20 @@ pub fn load_uefi(
         });
     }
 
+    if let Some(mcfg) = mcfg {
+        cfg.add_raw(config::BlobStructureType::Mcfg, mcfg);
+    }
+
     if let Some(pptt) = pptt {
         cfg.add_raw(config::BlobStructureType::Pptt, pptt);
+    }
+
+    if !pcie_topology.empty() {
+        let mut ssdt = acpi::ssdt::Ssdt::new();
+        for rc in pcie_topology.iter() {
+            ssdt.add_pcie(rc.segment, rc.start_bus, rc.end_bus);
+        }
+        cfg.add_raw(config::BlobStructureType::Ssdt, &ssdt.to_bytes());
     }
 
     let mut loader = Loader::new(gm.clone(), mem_layout, hvdef::Vtl::Vtl0);

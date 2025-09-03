@@ -265,7 +265,7 @@ impl CurrentResourceSettings {
     }
 }
 
-impl DsdtObject for CurrentResourceSettings {
+impl SdtObject for CurrentResourceSettings {
     fn append_to_vec(&self, byte_stream: &mut Vec<u8>) {
         let mut resource_bytes = self.resources.clone();
         // Add end of resource marker
@@ -280,7 +280,7 @@ impl DsdtObject for CurrentResourceSettings {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::dsdt::tests::verify_expected_bytes;
+    use crate::sdt::test_helpers::verify_expected_bytes;
 
     #[test]
     fn verify_memory_resource_object() {

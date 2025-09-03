@@ -33,6 +33,8 @@ use hvlite_defs::config::Hypervisor;
 use hvlite_defs::config::HypervisorConfig;
 use hvlite_defs::config::LoadMode;
 use hvlite_defs::config::MemoryConfig;
+use hvlite_defs::config::PcieRootComplexConfig;
+use hvlite_defs::config::PcieRootPortConfig;
 use hvlite_defs::config::PmuGsivConfig;
 use hvlite_defs::config::ProcessorTopologyConfig;
 use hvlite_defs::config::SerialPipes;
@@ -74,6 +76,8 @@ use pal_async::task::Spawn;
 use pal_async::task::Task;
 use pci_core::PciInterruptPin;
 use pci_core::msi::MsiInterruptSet;
+use pcie::GenericPcieRootComplex;
+use pcie::GenericPcieRootPort;
 use scsi_core::ResolveScsiDeviceHandleParams;
 use scsidisk::SimpleScsiDisk;
 use scsidisk::atapi_scsi::AtapiScsiDisk;
@@ -81,6 +85,7 @@ use serial_16550_resources::ComPort;
 use state_unit::SavedStateUnit;
 use state_unit::SpawnedUnit;
 use state_unit::StateUnits;
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
 use std::io::Write;
@@ -106,6 +111,7 @@ use vm_resource::kind::MouseInputHandleKind;
 use vm_resource::kind::VirtioDeviceHandle;
 use vm_resource::kind::VmbusDeviceHandleKind;
 use vm_topology::memory::MemoryLayout;
+use vm_topology::pcie::PcieTopology;
 use vm_topology::processor::ArchTopology;
 use vm_topology::processor::ProcessorTopology;
 use vm_topology::processor::TopologyBuilder;
@@ -165,6 +171,8 @@ impl Manifest {
             load_mode: config.load_mode,
             floppy_disks: config.floppy_disks,
             ide_disks: config.ide_disks,
+            pcie_root_complexes: config.pcie_root_complexes,
+            pcie_root_ports: config.pcie_root_ports,
             vpci_devices: config.vpci_devices,
             hypervisor: config.hypervisor,
             memory: config.memory,
@@ -206,6 +214,8 @@ pub struct Manifest {
     load_mode: LoadMode,
     floppy_disks: Vec<FloppyDiskConfig>,
     ide_disks: Vec<IdeDeviceConfig>,
+    pcie_root_complexes: Vec<PcieRootComplexConfig>,
+    pcie_root_ports: Vec<PcieRootPortConfig>,
     vpci_devices: Vec<VpciDeviceConfig>,
     memory: MemoryConfig,
     processor_topology: ProcessorTopologyConfig,
@@ -571,6 +581,7 @@ struct LoadedVmInner {
     client_notify_send: mesh::Sender<HaltReason>,
     /// allow the guest to reset without notifying the client
     automatic_guest_reset: bool,
+    pcie_topology: PcieTopology,
 }
 
 fn choose_hypervisor() -> anyhow::Result<Hypervisor> {
@@ -1099,6 +1110,7 @@ impl InitializedVm {
         ));
 
         let mapper = memory_manager.device_memory_mapper();
+        let mut pcie_topology = PcieTopology::new();
 
         #[cfg_attr(not(guest_arch = "x86_64"), expect(unused_mut))]
         let mut deps_hyperv_firmware_pcat = None;
@@ -1196,6 +1208,7 @@ impl InitializedVm {
                             processor_topology: &processor_topology,
                             mem_layout: &mem_layout,
                             cache_topology: None,
+                            pcie_topology: &pcie_topology,
                             with_ioapic: cfg.chipset.with_generic_ioapic,
                             with_pic: cfg.chipset.with_generic_pic,
                             with_pit: cfg.chipset.with_generic_pit,
@@ -1726,6 +1739,44 @@ impl InitializedVm {
         let mut vtl2_vmbus_server = None;
         let mut vtl2_hvsock_relay = None;
         let mut vmbus_redirect = false;
+
+        // PCI Express topology
+        let mut ecam_address = cfg.memory.pcie_ecam_base;
+        for rc in &cfg.pcie_root_complexes {
+            let mut ports = HashMap::new();
+            for rp in &cfg.pcie_root_ports {
+                if rp.root_complex_name == rc.name {
+                    ports.insert((ports.len() << 3) as u8, GenericPcieRootPort::new());
+                }
+            }
+
+            chipset_builder
+                .arc_mutex_device(rc.name.clone())
+                .add(|services| {
+                    GenericPcieRootComplex::new(
+                        &mut services.register_mmio(),
+                        rc.segment,
+                        rc.start_bus,
+                        rc.end_bus,
+                        ecam_address,
+                        ports,
+                    )
+                })?;
+
+            // TODO: Rename to host bridges?
+            pcie_topology.add_root_complex(
+                rc.segment,
+                rc.start_bus,
+                rc.end_bus,
+                ecam_address,
+            );
+
+            // TODO: Better ECAM arbitration logic?
+            // 256 possible functions per bus number
+            // 4096 bytes per function
+            let bus_count = (rc.end_bus as u16) - (rc.start_bus as u16) + 1;
+            ecam_address += (bus_count as u64) * 256 * 4096;
+        }
 
         if let Some(vmbus_cfg) = cfg.vmbus {
             if !cfg.hypervisor.with_hv {
@@ -2354,6 +2405,7 @@ impl InitializedVm {
                 halt_recv,
                 client_notify_send,
                 automatic_guest_reset: cfg.automatic_guest_reset,
+                pcie_topology,
             },
         };
 
@@ -2383,6 +2435,7 @@ impl LoadedVmInner {
             processor_topology: &self.processor_topology,
             mem_layout: &self.mem_layout,
             cache_topology: cache_topology.as_ref(),
+            pcie_topology: &self.pcie_topology,
             with_ioapic: self.chipset_cfg.with_generic_ioapic,
             with_psp: self.chipset_cfg.with_generic_psp,
             with_pic: self.chipset_cfg.with_generic_pic,
@@ -2478,6 +2531,7 @@ impl LoadedVmInner {
             } => {
                 let madt = acpi_builder.build_madt();
                 let srat = acpi_builder.build_srat();
+                let mcfg = (!self.pcie_topology.empty()).then(|| acpi_builder.build_mcfg());
                 let pptt = cache_topology.is_some().then(|| acpi_builder.build_pptt());
                 let load_settings = super::vm_loaders::uefi::UefiLoadSettings {
                     debugging: enable_debugging,
@@ -2496,9 +2550,11 @@ impl LoadedVmInner {
                     &self.gm,
                     &self.processor_topology,
                     &self.mem_layout,
+                    &self.pcie_topology,
                     load_settings,
                     &madt,
                     &srat,
+                    mcfg.as_deref(),
                     pptt.as_deref(),
                 )?;
 
@@ -2943,6 +2999,8 @@ impl LoadedVm {
             load_mode: self.inner.load_mode,
             floppy_disks: vec![], // TODO
             ide_disks: vec![],    // TODO
+            pcie_root_complexes: vec![], // TODO
+            pcie_root_ports: vec![], // TODO
             vpci_devices: vec![], // TODO
             memory: self.inner.memory_cfg,
             processor_topology: self.inner.processor_topology.to_config(),

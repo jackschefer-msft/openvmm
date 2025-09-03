@@ -16,3 +16,14 @@ client. The following clients have been tested working with OpenVMM:
 
 Once you have downloaded and installed it you can connect to `localhost` with
 the appropriate port to see your VM.
+
+## On WSL2
+
+WSL2 supports graphical applications, so when running OpenVMM from WSL2 you can
+install and run your VNC client of choice within WSL2 as well.
+
+```
+sudo apt install tigervnc-viewer
+# Run OpenVMM with --gfx
+xtigervncviewer localhost:5900
+```
