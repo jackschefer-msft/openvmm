@@ -12,6 +12,7 @@ use guid::Guid;
 use hvlite_defs::config::Config;
 use hvlite_defs::config::DeviceVtl;
 use hvlite_defs::config::LoadMode;
+use hvlite_defs::config::PcieEndpointConfig;
 use hvlite_defs::config::VpciDeviceConfig;
 use ide_resources::GuestMedia;
 use ide_resources::IdeDeviceConfig;
@@ -20,6 +21,7 @@ use nvme_resources::NamespaceDefinition;
 use nvme_resources::NvmeControllerHandle;
 use scsidisk_resources::SimpleScsiDiskHandle;
 use scsidisk_resources::SimpleScsiDvdHandle;
+use std::collections::HashMap;
 use storvsp_resources::ScsiControllerHandle;
 use storvsp_resources::ScsiDeviceAndPath;
 use storvsp_resources::ScsiPath;
@@ -34,23 +36,24 @@ pub(super) struct StorageBuilder {
     vtl2_scsi_devices: Vec<ScsiDeviceAndPath>,
     vtl0_nvme_namespaces: Vec<NamespaceDefinition>,
     vtl2_nvme_namespaces: Vec<NamespaceDefinition>,
+    pcie_nvme_controllers: HashMap<String, Vec<NamespaceDefinition>>,
     underhill_scsi_luns: Vec<Lun>,
     underhill_nvme_luns: Vec<Lun>,
     openhcl_vtl: Option<DeviceVtl>,
 }
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 pub enum DiskLocation {
     Ide(Option<u8>, Option<u8>),
     Scsi(Option<u8>),
-    Nvme(Option<u32>),
+    Nvme(Option<u32>, Option<String>),
 }
 
 impl From<UnderhillDiskSource> for DiskLocation {
     fn from(value: UnderhillDiskSource) -> Self {
         match value {
             UnderhillDiskSource::Scsi => Self::Scsi(None),
-            UnderhillDiskSource::Nvme => Self::Nvme(None),
+            UnderhillDiskSource::Nvme => Self::Nvme(None, None),
         }
     }
 }
@@ -72,6 +75,7 @@ impl StorageBuilder {
             vtl2_scsi_devices: Vec::new(),
             vtl0_nvme_namespaces: Vec::new(),
             vtl2_nvme_namespaces: Vec::new(),
+            pcie_nvme_controllers: HashMap::new(),
             underhill_scsi_luns: Vec::new(),
             underhill_nvme_luns: Vec::new(),
             openhcl_vtl,
@@ -188,11 +192,16 @@ impl StorageBuilder {
                 });
                 Some(lun.into())
             }
-            DiskLocation::Nvme(nsid) => {
-                let namespaces = match vtl {
-                    DeviceVtl::Vtl0 => &mut self.vtl0_nvme_namespaces,
-                    DeviceVtl::Vtl1 => anyhow::bail!("vtl1 unsupported"),
-                    DeviceVtl::Vtl2 => &mut self.vtl2_nvme_namespaces,
+            DiskLocation::Nvme(nsid, pcie_port) => {
+                let namespaces = match (vtl, pcie_port) {
+                    // VPCI
+                    (DeviceVtl::Vtl0, None) => &mut self.vtl0_nvme_namespaces,
+                    (DeviceVtl::Vtl1, None) => anyhow::bail!("vtl1 vpci unsupported"),
+                    (DeviceVtl::Vtl2, None) => &mut self.vtl2_nvme_namespaces,
+                    // PCIe
+                    (DeviceVtl::Vtl0, Some(port)) => self.pcie_nvme_controllers.entry(port).or_insert(Vec::new()),
+                    (DeviceVtl::Vtl1, Some(_)) => anyhow::bail!("vtl1 pcie unsupported"),
+                    (DeviceVtl::Vtl2, Some(_)) => anyhow::bail!("vtl2 pcie unsupported"),
                 };
                 if is_dvd {
                     anyhow::bail!("dvd not supported with nvme");
@@ -219,7 +228,7 @@ impl StorageBuilder {
     ) -> anyhow::Result<()> {
         let vtl = self.openhcl_vtl.context("openhcl not configured")?;
         let sub_device_path = self
-            .add_inner(vtl, source, kind, is_dvd, read_only)?
+            .add_inner(vtl, source.clone(), kind, is_dvd, read_only)?
             .context("source device not supported by underhill")?;
 
         let (device_type, device_path) = match source {
@@ -232,7 +241,7 @@ impl StorageBuilder {
                     SCSI_VTL0_INSTANCE_ID
                 },
             ),
-            DiskLocation::Nvme(_) => (
+            DiskLocation::Nvme(_, _) => (
                 vtl2_settings_proto::physical_device::DeviceType::Nvme,
                 if vtl == DeviceVtl::Vtl2 {
                     NVME_VTL2_INSTANCE_ID
@@ -251,7 +260,7 @@ impl StorageBuilder {
                 let lun = lun.unwrap_or(self.underhill_scsi_luns.len() as u8);
                 (&mut self.underhill_scsi_luns, lun.into())
             }
-            DiskLocation::Nvme(nsid) => {
+            DiskLocation::Nvme(nsid, _) => {
                 let nsid = nsid.unwrap_or(self.underhill_nvme_luns.len() as u32 + 1);
                 (&mut self.underhill_nvme_luns, nsid)
             }
@@ -372,6 +381,20 @@ impl StorageBuilder {
                 }
                 .into_resource(),
             });
+        }
+
+        let owned_pcie_controllers = std::mem::take(&mut self.pcie_nvme_controllers);
+        for (port_name, namespaces) in owned_pcie_controllers {
+            config.pcie_endpoints.push(PcieEndpointConfig {
+                port_name,
+                resource: NvmeControllerHandle {
+                    subsystem_id: NVME_VTL0_INSTANCE_ID,
+                    namespaces,
+                    max_io_queues: 64,
+                    msix_count: 64,
+                }
+                .into_resource(),
+            })
         }
 
         Ok(())
