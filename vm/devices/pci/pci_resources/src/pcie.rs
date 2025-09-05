@@ -1,27 +1,23 @@
 // Copyright (c) Microsoft Corporation.
 // Licensed under the MIT License.
 
-//! Resource definitions for NVMe controllers.
+//! Resource definitions for PCI Express topology components.
 
 #![forbid(unsafe_code)]
 
-use crate::fault::FaultConfiguration;
-use guid::Guid;
+//use crate::fault::FaultConfiguration;
+//use guid::Guid;
 use mesh::MeshPayload;
 use vm_resource::Resource;
 use vm_resource::ResourceId;
 use vm_resource::kind::DiskHandleKind;
 use vm_resource::kind::PciDeviceHandleKind;
 
-pub mod fault;
-
-/// A handle to an NVMe controller.
+/// A handle to a PCIe root complex.
 #[derive(MeshPayload)]
-pub struct NvmeControllerHandle {
+pub struct PcieRootComplexHandle {
     /// The subsystem ID to use when responding to controller identify queries.
     pub subsystem_id: Guid,
-    /// The controller ID to use when responding to controller identify queries.
-    pub controller_id: u16,
     /// The number of MSI-X interrupts to support.
     pub msix_count: u16,
     /// The number of IO queues to support.
@@ -39,8 +35,6 @@ impl ResourceId<PciDeviceHandleKind> for NvmeControllerHandle {
 pub struct NvmeFaultControllerHandle {
     /// The subsystem ID to use when responding to controller identify queries.
     pub subsystem_id: Guid,
-    /// The controller ID to use when responding to controller identify queries.
-    pub controller_id: u16,
     /// The number of MSI-X interrupts to support.
     pub msix_count: u16,
     /// The number of IO queues to support.

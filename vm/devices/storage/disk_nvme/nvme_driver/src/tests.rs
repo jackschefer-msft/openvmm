@@ -72,6 +72,7 @@ async fn test_nvme_save_restore(driver: DefaultDriver) {
 
 #[async_test]
 async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
+    const CNTLID: u16 = 0;
     const MSIX_COUNT: u16 = 2;
     const IO_QUEUE_COUNT: u16 = 64;
     const CPU_COUNT: u32 = 64;
@@ -94,6 +95,7 @@ async fn test_nvme_ioqueue_max_mqes(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            controller_id: CNTLID,
         },
     );
 
@@ -131,6 +133,7 @@ async fn test_nvme_ioqueue_invalid_mqes(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            controller_id: CNTLID,
         },
     );
 
@@ -168,6 +171,7 @@ async fn test_nvme_driver(driver: DefaultDriver, allow_dma: bool) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            controller_id: CNTLID,
         },
     );
 
@@ -281,6 +285,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            controller_id: CNTLID,
         },
     );
 
@@ -313,6 +318,7 @@ async fn test_nvme_save_restore_inner(driver: DefaultDriver) {
             msix_count: MSIX_COUNT,
             max_io_queues: IO_QUEUE_COUNT,
             subsystem_id: Guid::new_random(),
+            controller_id: CNTLID,
         },
     );
 

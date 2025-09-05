@@ -70,6 +70,8 @@ pub struct AdminConfig {
     pub doorbells: Vec<Arc<DoorbellRegister>>,
     #[inspect(display)]
     pub subsystem_id: Guid,
+    #[inspect(display)]
+    pub controller_id: u16,
     pub max_sqs: u16,
     pub max_cqs: u16,
     pub qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
@@ -614,6 +616,8 @@ impl AdminHandler {
         spec::IdentifyController {
             vid: VENDOR_ID,
             ssvid: VENDOR_ID,
+            cntlid: self.config.controller_id,
+            cmic: 0x02,
             mdts: (MAX_DATA_TRANSFER_SIZE / PAGE_SIZE).trailing_zeros() as u8,
             ver: NVME_VERSION,
             rtd3r: 400000,

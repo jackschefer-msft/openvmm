@@ -3090,6 +3090,8 @@ dependencies = [
  "pal_async",
  "pci_bus",
  "pci_core",
+ "pci_resources",
+ "pcie",
  "range_map_vec",
  "scsi_core",
  "scsidisk",
@@ -5549,6 +5551,20 @@ dependencies = [
  "pci_core",
  "vm_resource",
  "vmcore",
+]
+
+[[package]]
+name = "pcie"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "chipset_device",
+ "inspect",
+ "mesh",
+ "pci_bus",
+ "tracing",
+ "vmcore",
+ "zerocopy 0.8.25",
 ]
 
 [[package]]
@@ -9373,6 +9389,7 @@ dependencies = [
  "parking_lot",
  "paste",
  "pci_bus",
+ "pcie",
  "range_map_vec",
  "state_unit",
  "thiserror 2.0.16",

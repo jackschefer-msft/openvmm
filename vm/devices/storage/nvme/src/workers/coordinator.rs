@@ -60,6 +60,7 @@ impl NvmeWorkers {
         max_cqs: u16,
         qe_sizes: Arc<Mutex<IoQueueEntrySizes>>,
         subsystem_id: Guid,
+        controller_id: u16,
     ) -> Self {
         let num_qids = 2 + max_sqs.max(max_cqs) * 2;
         let doorbells: Vec<_> = (0..num_qids)
@@ -75,6 +76,7 @@ impl NvmeWorkers {
                 interrupts,
                 doorbells: doorbells.clone(),
                 subsystem_id,
+                controller_id,
                 max_sqs,
                 max_cqs,
                 qe_sizes,
