@@ -50,6 +50,8 @@ pub struct ChipsetDevices {
     _arc_mutex_device_units: Vec<SpawnedUnit<ArcMutexChipsetDeviceUnit>>,
     _line_set_units: Vec<SpawnedUnit<()>>,
     mmio_ranges: IoRanges<u64>,
+    /// TODO: BUGBUGBUGBUG
+    pub bus_resolver: BusResolver,
 }
 
 impl ChipsetDevices {
@@ -67,7 +69,7 @@ impl ChipsetDevices {
         driver_source: &VmTaskDriverSource,
         units: &StateUnits,
         name: impl Into<Arc<str>>,
-        f: impl AsyncFnOnce(&mut dyn RegisterMmioIntercept) -> anyhow::Result<T>,
+        f: impl AsyncFnOnce(&mut (dyn RegisterMmioIntercept + Send)) -> anyhow::Result<T>,
     ) -> anyhow::Result<(DynamicDeviceUnit, Arc<CloseableMutex<T>>)> {
         let name = name.into();
         let arc_builder = Arc::<CloseableMutex<T>>::new_cyclic_builder();
@@ -101,9 +103,9 @@ impl DynamicDeviceUnit {
 }
 
 #[derive(Default)]
-pub(crate) struct BusResolver {
+pub struct BusResolver {
     pci: BusResolverWeakMutexPci,
-    pcie: BusResolverWeakMutexPcie,
+    pub pcie: BusResolverWeakMutexPcie,
 }
 
 /// A builder for [`Chipset`]
@@ -309,9 +311,7 @@ impl<'a> ChipsetBuilder<'a> {
         }
 
         {
-            let BusResolver { pci, pcie } = self.bus_resolver;
-
-            match pci.resolve() {
+            match self.bus_resolver.pci.resolve() {
                 Ok(()) => {}
                 Err(conflicts) => {
                     for conflict in conflicts {
@@ -320,7 +320,7 @@ impl<'a> ChipsetBuilder<'a> {
                 }
             }
 
-            match pcie.resolve() {
+            match self.bus_resolver.pcie.resolve() {
                 Ok(()) => {}
                 Err(conflicts) => {
                     for conflict in conflicts {
@@ -354,6 +354,7 @@ impl<'a> ChipsetBuilder<'a> {
             _arc_mutex_device_units: self.arc_mutex_device_units,
             _line_set_units: self.line_sets.units,
             mmio_ranges,
+            bus_resolver: self.bus_resolver,
         };
 
         Ok((vm_chipset, devices))

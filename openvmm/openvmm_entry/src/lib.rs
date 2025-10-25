@@ -124,6 +124,7 @@ use std::net::TcpListener;
 use std::path::Path;
 use std::path::PathBuf;
 use std::pin::pin;
+use std::str::FromStr;
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -1987,6 +1988,18 @@ enum InteractiveCommand {
 
     /// Use KVP to interact with the guest.
     Kvp(kvp::KvpCommand),
+
+    /// Add a PCIe device to the VM at runtime.
+    ///
+    /// The format of the argument string is:
+    ///     <device_type>:<device_arguments>
+    ///
+    /// Where the arguments match the typical command-line
+    /// arguments for the specific device type. Currently
+    /// supported devices include:
+    ///     `nvme`          Using the syntax of `--nvme`
+    ///                     ex. `nvme:mem:1G,pcie_port=port0`
+    AddPcie { arg: String },
 }
 
 struct CommandParser {
@@ -2962,6 +2975,54 @@ async fn run_control(driver: &DefaultDriver, mesh: &VmmMesh, opt: Options) -> an
                 if let Err(err) = kvp::handle_kvp(kvp, command).await {
                     eprintln!("error: {err:#}");
                 }
+            }
+            InteractiveCommand::AddPcie { arg } => {
+                let Some((dev_type, dev_arg)) = arg.split_once(":") else {
+                    eprintln!("error: failed to parse device type");
+                    continue;
+                };
+
+                let (port_name, resource) = match dev_type {
+                    "nvme" => {
+                        let Ok(disk_cli) = cli_args::DiskCli::from_str(dev_arg) else {
+                            eprintln!("error: failed to parse nvme device arguments");
+                            continue;
+                        };
+                        let Some(port_name) = disk_cli.pcie_port else {
+                            eprintln!("error: `add-pcie` requires `pcie_port`");
+                            continue;
+                        };
+                        let Ok(disk) = disk_open(&disk_cli.kind, disk_cli.read_only) else {
+                            eprintln!("error: failed to open backing disk handle");
+                            continue;
+                        };
+                        let resource = nvme_resources::NvmeControllerHandle {
+                            subsystem_id: Guid::new_random(),
+                            max_io_queues: 64,
+                            msix_count: 64,
+                            namespaces: vec![nvme_resources::NamespaceDefinition {
+                                nsid: 1,
+                                read_only: disk_cli.read_only,
+                                disk,
+                            }],
+                        }
+                        .into_resource();
+                        (port_name, resource)
+                    }
+                    _ => {
+                        eprintln!("error: unsupported device type: {}", dev_type);
+                        continue;
+                    }
+                };
+
+                if let Err(e) = vm_rpc
+                    .call_failable(VmRpc::AddPcieDevice, (port_name, resource))
+                    .await
+                {
+                    eprintln!("error: failed to add pcie device in the vm worker: {}", e);
+                    continue;
+                }
+                println!("added device");
             }
             InteractiveCommand::Input { .. } | InteractiveCommand::InputMode => unreachable!(),
         }

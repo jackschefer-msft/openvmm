@@ -319,7 +319,14 @@ impl Inspect for Inner {
                     resp.field_with("dependencies", || {
                         unit.dependencies
                             .iter()
-                            .map(|id| self.units[id].name.as_ref())
+                            .map(|id| {
+                                if let Some(u) = self.units.get(id) {
+                                    u.name.as_ref()
+                                } else {
+                                    tracing::error!("corrpution, bad unit id: {}", id);
+                                    "CORRUPT"
+                                }
+                            })
                             .collect::<Vec<_>>()
                             .join(",")
                     });

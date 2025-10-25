@@ -14,6 +14,7 @@ use mesh::rpc::Rpc;
 use std::fmt;
 use std::fs::File;
 use vm_resource::Resource;
+use vm_resource::kind::PciDeviceHandleKind;
 use vm_resource::kind::VmbusDeviceHandleKind;
 
 #[derive(MeshPayload)]
@@ -31,6 +32,7 @@ pub enum VmRpc {
     CompleteReloadIgvm(FailableRpc<bool, ()>),
     ReadMemory(FailableRpc<(u64, usize), Vec<u8>>),
     WriteMemory(FailableRpc<(u64, Vec<u8>), ()>),
+    AddPcieDevice(FailableRpc<(String, Resource<PciDeviceHandleKind>), ()>),
 }
 
 #[derive(Debug, MeshPayload, thiserror::Error)]
@@ -63,6 +65,7 @@ impl fmt::Debug for VmRpc {
             VmRpc::CompleteReloadIgvm(_) => "CompleteReloadIgvm",
             VmRpc::ReadMemory(_) => "ReadMemory",
             VmRpc::WriteMemory(_) => "WriteMemory",
+            VmRpc::AddPcieDevice(_) => "AddPcieDevice",
         };
         f.pad(s)
     }

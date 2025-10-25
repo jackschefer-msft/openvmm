@@ -41,16 +41,16 @@ pub struct BusResolverWeakMutexPci {
 }
 
 impl BusResolverWeakMutexPci {
-    pub fn resolve(mut self) -> Result<(), Vec<PciConflict>> {
+    pub fn resolve(&mut self) -> Result<(), Vec<PciConflict>> {
         let mut errs = Vec::new();
 
-        for (bus_id, entries) in self.devices {
+        for (bus_id, entries) in &self.devices {
             for WeakMutexPciEntry { bdf, name, dev } in entries {
                 let pci_bus = match self.buses.get_mut(&bus_id) {
                     Some(bus) => bus,
                     None => {
                         errs.push(PciConflict {
-                            bdf,
+                            bdf: *bdf,
                             conflict_dev: name.clone(),
                             reason: PciConflictReason::MissingBus,
                         });
@@ -58,8 +58,8 @@ impl BusResolverWeakMutexPci {
                     }
                 };
 
-                let (bus, device, function) = bdf;
-                match pci_bus.add_pci_device(bus, device, function, name, dev) {
+                let (bus, device, function) = *bdf;
+                match pci_bus.add_pci_device(bus, device, function, name.clone(), dev.clone()) {
                     Ok(()) => {}
                     Err(conflict) => {
                         errs.push(conflict);
@@ -96,22 +96,29 @@ pub struct WeakMutexPcieDeviceEntry {
     pub dev: Weak<CloseableMutex<dyn ChipsetDevice>>,
 }
 
+pub struct ArcMutexPcieDeviceEntry {
+    pub bus_id_port: BusIdPcieDownstreamPort,
+    pub name: Arc<str>,
+    pub dev: Arc<CloseableMutex<dyn ChipsetDevice>>,
+}
+
 #[derive(Default)]
 pub struct BusResolverWeakMutexPcie {
     pub enumerators: HashMap<BusIdPcieEnumerator, Box<dyn RegisterWeakMutexPcie>>,
     pub ports: HashMap<BusIdPcieDownstreamPort, (u8, BusIdPcieEnumerator)>,
     pub devices: Vec<WeakMutexPcieDeviceEntry>,
+    pub dyn_devices: Vec<ArcMutexPcieDeviceEntry>,
 }
 
 impl BusResolverWeakMutexPcie {
-    pub fn resolve(mut self) -> Result<(), Vec<PcieConflict>> {
+    pub fn resolve(&mut self) -> Result<(), Vec<PcieConflict>> {
         let mut errs = Vec::new();
 
         for WeakMutexPcieDeviceEntry {
             bus_id_port,
             name,
             dev,
-        } in self.devices
+        } in &self.devices
         {
             let (port_number, bus_id_enumerator) = match self.ports.get(&bus_id_port) {
                 Some(v) => v,
@@ -135,7 +142,7 @@ impl BusResolverWeakMutexPcie {
                 }
             };
 
-            match enumerator.add_pcie_device(*port_number, name, dev) {
+            match enumerator.add_pcie_device(*port_number, name.clone(), dev.clone()) {
                 Ok(()) => {}
                 Err(conflict) => {
                     errs.push(conflict);
@@ -145,5 +152,41 @@ impl BusResolverWeakMutexPcie {
         }
 
         if !errs.is_empty() { Err(errs) } else { Ok(()) }
+    }
+
+    pub fn resolve_dyn_device(
+        &mut self,
+        bus_id_port: BusIdPcieDownstreamPort,
+        name: Arc<str>,
+        dev: Arc<CloseableMutex<dyn ChipsetDevice>>,
+    ) -> Result<(), PcieConflict> {
+        let (port_number, bus_id_enumerator) = match self.ports.get(&bus_id_port) {
+            Some(v) => v,
+            None => {
+                return Err(PcieConflict {
+                    conflict_dev: name.clone(),
+                    reason: PcieConflictReason::MissingDownstreamPort,
+                });
+            }
+        };
+
+        let enumerator = match self.enumerators.get_mut(bus_id_enumerator) {
+            Some(enumerator) => enumerator,
+            None => {
+                return Err(PcieConflict {
+                    conflict_dev: name.clone(),
+                    reason: PcieConflictReason::MissingEnumerator,
+                });
+            }
+        };
+
+        enumerator.add_pcie_device(*port_number, name.clone(), Arc::downgrade(&dev.clone()))?;
+
+        self.dyn_devices.push(ArcMutexPcieDeviceEntry {
+            bus_id_port,
+            name: name.clone(),
+            dev,
+        });
+        Ok(())
     }
 }

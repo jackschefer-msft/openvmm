@@ -2913,6 +2913,70 @@ impl LoadedVm {
                     VmRpc::WriteMemory(rpc) => rpc.handle_failable_sync(|(gpa, bytes)| {
                         self.inner.gm.write_at(gpa, bytes.as_slice())
                     }),
+                    VmRpc::AddPcieDevice(rpc) => {
+                        rpc.handle_failable(async |(port_name, resource)| {
+                            let name: Arc<str> = Arc::from(
+                                format!("pcie-hp:{}-{}", port_name, resource.id()).as_str(),
+                            );
+                            let mut msi_set = MsiInterruptSet::new();
+                            let (u, d) = self
+                                .inner
+                                ._chipset_devices
+                                .add_dyn_device(
+                                    &self.inner.driver_source,
+                                    &self.state_units,
+                                    name.clone(),
+                                    async |register_mmio| {
+                                        let d = self
+                                            .inner
+                                            .resolver
+                                            .resolve(
+                                                resource,
+                                                pci_resources::ResolvePciDeviceHandleParams {
+                                                    register_msi: &mut msi_set,
+                                                    register_mmio,
+                                                    driver_source: &self.inner.driver_source,
+                                                    guest_memory: &self.inner.gm,
+                                                    doorbell_registration: None,
+                                                    shared_mem_mapper: None,
+                                                },
+                                            )
+                                            .await
+                                            .map(|r| r.0)?;
+
+                                        Ok(d)
+                                    },
+                                )
+                                .await?;
+
+                            if let Some(target) =
+                                self.inner.partition.clone().into_msi_target(Vtl::Vtl0)
+                            {
+                                msi_set.connect(target.as_ref());
+                            }
+                            self.state_units.start_stopped_units().await;
+
+                            if let Err(conflict) = self
+                                .inner
+                                ._chipset_devices
+                                .bus_resolver
+                                .pcie
+                                .resolve_dyn_device(
+                                    vmotherboard::BusId::new(port_name.as_str()),
+                                    name,
+                                    d,
+                                )
+                            {
+                                tracing::error!(?conflict, "conflict during hotplug")
+                            }
+
+                            // NOT WORKING: Need to do "something" with the unit and device
+                            // so that the reference count(s) don't go to zero?
+
+                            anyhow::Ok(())
+                        })
+                        .await
+                    }
                 },
                 Event::Halt(Err(_)) => break,
                 Event::Halt(Ok(reason)) => {

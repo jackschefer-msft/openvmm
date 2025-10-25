@@ -98,6 +98,7 @@ impl GenericPcieRootComplex {
         name: impl AsRef<str>,
         dev: D,
     ) -> Result<(), Arc<str>> {
+        tracing::info!("adding pcie device '{}' to port '{}'", name.as_ref(), port);
         let (_, root_port) = self
             .ports
             .get_mut(&port)
@@ -362,11 +363,15 @@ impl RootPort {
             if let Some((_, device)) = &mut self.link {
                 if let Some(result) = device.pci_cfg_read(cfg_offset, value) {
                     check_result!(result);
+                } else {
+                    tracing::info!("fwd_cfg_read dev returned no IoResult");
                 }
             }
         } else if bus_range.contains(bus) {
             tracelimit::warn_ratelimited!("multi-level hierarchies not implemented yet");
         }
+
+        tracing::info!("fwd_cfg_read, link connected: {}, value: {}", self.link.is_some(), value);
 
         IoResult::Ok
     }
