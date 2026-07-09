@@ -18,7 +18,6 @@ use crate::port::PcieDownstreamPort;
 use crate::port::PciePortSettings;
 use anyhow::Context;
 use chipset_device::ChipsetDevice;
-use chipset_device::io::IoError;
 use chipset_device::io::IoResult;
 use chipset_device::pci::ByteEnabledDwordRead;
 use chipset_device::pci::ByteEnabledDwordWrite;
@@ -297,7 +296,7 @@ impl GenericPcieSwitch {
         let (_, _, downstream_port) = self
             .downstream_ports
             .iter_mut()
-            .find(|(devfn, _, _)| *devfn == addr.device_function)?;
+            .find(|(devfn, _, _)| *devfn == addr.devfn)?;
         Some(downstream_port.port.cfg_space.read(addr, value))
     }
 
@@ -310,7 +309,7 @@ impl GenericPcieSwitch {
         let (_, _, downstream_port) = self
             .downstream_ports
             .iter_mut()
-            .find(|(devfn, _, _)| *devfn == addr.device_function)?;
+            .find(|(devfn, _, _)| *devfn == addr.devfn)?;
         Some(downstream_port.port.cfg_space.write(addr, value))
     }
 
@@ -367,70 +366,43 @@ impl ChipsetDevice for GenericPcieSwitch {
 
 impl PciConfigSpace for GenericPcieSwitch {
     /// Reads the switch's own upstream-port config space (Type 0 view).
-    fn pci_cfg_read(&mut self, offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
-        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
+    fn pci_cfg_read(&mut self, byte_offset: u16, value: ByteEnabledDwordRead<'_>) -> IoResult {
         self.upstream_port
             .cfg_space
-            .read_byte_enabled(offset, value)
+            .read_byte_enabled(byte_offset, value)
     }
 
     /// Writes the switch's own upstream-port config space (Type 0 view).
-    fn pci_cfg_write(&mut self, offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
-        // Forward to the upstream port's configuration space (the switch presents as the upstream port)
+    /// The switch presents as the upstream port, so only function 0 is valid.
+    fn pci_cfg_write(&mut self, byte_offset: u16, value: ByteEnabledDwordWrite) -> IoResult {
         self.upstream_port
             .cfg_space
-            .write_byte_enabled(offset, value)
+            .write_byte_enabled(byte_offset, value)
     }
 
-    fn pci_cfg_read_with_routing(
+    fn pci_cfg_type1_read(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        address: PciConfigAddress,
         mut value: ByteEnabledDwordRead<'_>,
     ) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(target_bus, function, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        // If target_bus == secondary_bus, this is a Type 0 access to the switch's own config space.
-        // We only implement function 0.
-        if target_bus == secondary_bus {
-            if function == 0 {
-                return self
-                    .upstream_port
-                    .cfg_space
-                    .read_byte_enabled(offset, value);
-            } else {
-                value.set(!0);
-                return IoResult::Ok;
-            }
-        }
-
-        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
-
         // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration
+        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
         if upstream_bus_range == (0..=0) {
             value.set(!0);
             return IoResult::Ok;
         }
 
         // If the target bus is not within the upstream bus range, we cannot route it. Return all-1s.
-        if !upstream_bus_range.contains(&target_bus) {
+        if !upstream_bus_range.contains(&address.bus) {
             value.set(!0);
             return IoResult::Ok;
         }
 
         // If the target bus is the start of the upstream bus range, this access targets one of the
         // downstream ports on the internal bus of the switch.
-        if target_bus == *upstream_bus_range.start() {
+        if address.bus == *upstream_bus_range.start() {
             return self
-                .handle_downstream_port_read(addr, value.reborrow())
+                .handle_downstream_port_read(address, value.reborrow())
                 .unwrap_or_else(|| {
                     value.set(!0);
                     IoResult::Ok
@@ -440,62 +412,37 @@ impl PciConfigSpace for GenericPcieSwitch {
         // The access must be routed somewhere downstream of a downstream port, invoke the
         // config space handler for dealing with deferrals and such.
         let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
-        self.bus_cfg_handler.read(addr, value, &mut callback)
+        self.bus_cfg_handler.read(address, value, &mut callback)
     }
 
-    fn pci_cfg_write_with_routing(
+    fn pci_cfg_type1_write(
         &mut self,
-        secondary_bus: u8,
-        target_bus: u8,
-        function: u8,
-        offset: u16,
+        address: PciConfigAddress,
         value: ByteEnabledDwordWrite,
     ) -> IoResult {
-        if !offset.is_multiple_of(4) {
-            return IoResult::Err(IoError::UnalignedAccess);
-        }
-
-        let Some(addr) = PciConfigAddress::new(target_bus, function, offset / 4) else {
-            return IoResult::Err(IoError::InvalidRegister);
-        };
-
-        // If target_bus == secondary_bus, this is a Type 0 access to the switch's own config space.
-        // We only implement function 0.
-        if target_bus == secondary_bus {
-            if function == 0 {
-                return self
-                    .upstream_port
-                    .cfg_space
-                    .write_byte_enabled(offset, value);
-            } else {
-                return IoResult::Ok;
-            }
-        }
-
-        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
-
         // If the bus range is 0..=0, this indicates invalid/uninitialized bus configuration.
+        let upstream_bus_range = self.upstream_port.cfg_space.assigned_bus_range();
         if upstream_bus_range == (0..=0) {
             return IoResult::Ok;
         }
 
         // If the target bus is not within the upstream bus range, we cannot route it.
-        if !upstream_bus_range.contains(&target_bus) {
+        if !upstream_bus_range.contains(&address.bus) {
             return IoResult::Ok;
         }
 
         // If the target bus is the start of the upstream bus range, this access targets one of the
         // downstream ports on the internal bus of the switch.
-        if target_bus == *upstream_bus_range.start() {
+        if address.bus == *upstream_bus_range.start() {
             return self
-                .handle_downstream_port_write(addr, value)
+                .handle_downstream_port_write(address, value)
                 .unwrap_or(IoResult::Ok);
         }
 
         // The access must be routed somewhere downstream of a downstream port, invoke the
         // config space handler for dealing with deferrals and such.
         let mut callback = PciBusCfgAccessCallbackView::new(&mut self.downstream_ports);
-        self.bus_cfg_handler.write(addr, value, &mut callback)
+        self.bus_cfg_handler.write(address, value, &mut callback)
     }
 
     fn suggested_bdf(&mut self) -> Option<(u8, u8, u8)> {
@@ -1048,10 +995,7 @@ mod tests {
         let subordinate_bus = 10u8;
         // Set secondary bus number (offset 0x18) - bits 8-15 of the 32-bit value at 0x18
         let bus_config = (subordinate_bus as u32) << 16 | ((secondary_bus as u32) << 8);
-        let result = switch.pci_cfg_write_with_routing(
-            0,
-            0,
-            0,
+        let result = switch.pci_cfg_write(
             0x18,
             ByteEnabledDwordWrite::with_all_bytes_enabled(bus_config),
         );
@@ -1063,11 +1007,8 @@ mod tests {
 
         // Test direct access to downstream port 0 using function = 0
         let mut value = 0u32;
-        let result = switch.pci_cfg_read_with_routing(
-            0,
-            switch_internal_bus,
-            0,
-            0x0,
+        let result = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(switch_internal_bus, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result, IoResult::Ok));
@@ -1078,11 +1019,8 @@ mod tests {
 
         // Test direct access to downstream port 2 using function = 2
         let mut value2 = 0u32;
-        let result2 = switch.pci_cfg_read_with_routing(
-            0,
-            switch_internal_bus,
-            2,
-            0x0,
+        let result2 = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(switch_internal_bus, 2, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value2),
         );
         assert!(matches!(result2, IoResult::Ok));
@@ -1090,11 +1028,8 @@ mod tests {
 
         // Test access to non-existent downstream port using function = 5
         let mut value3 = 0u32;
-        let result3 = switch.pci_cfg_read_with_routing(
-            0,
-            switch_internal_bus,
-            5,
-            0x0,
+        let result3 = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(switch_internal_bus, 5, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value3),
         );
         assert!(matches!(result3, IoResult::Ok));
@@ -1117,31 +1052,22 @@ mod tests {
 
         // Test that any access returns 1s when bus range is invalid
         let mut value = 0u32;
-        let result = switch.pci_cfg_read_with_routing(
-            0,
-            1,
-            0,
-            0x0,
+        let result = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(1, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result, IoResult::Ok));
         assert_eq!(value, !0);
 
-        let result2 = switch.pci_cfg_read_with_routing(
-            0,
-            1,
-            0,
-            0x0,
+        let result2 = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(1, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result2, IoResult::Ok));
         assert_eq!(value, !0);
 
-        let result3 = switch.pci_cfg_read_with_routing(
-            0,
-            2,
-            0,
-            0x0,
+        let result3 = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(2, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result3, IoResult::Ok));
@@ -1175,33 +1101,24 @@ mod tests {
         let mut value = 0u32;
 
         // Access to bus 2 should return 1s since no downstream port has a valid bus range
-        let result = switch.pci_cfg_read_with_routing(
-            0,
-            2,
-            0,
-            0x0,
+        let result = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(2, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result, IoResult::Ok));
         assert_eq!(value, !0);
 
         // Access to bus 5 should also return 1s
-        let result2 = switch.pci_cfg_read_with_routing(
-            0,
-            5,
-            0,
-            0x0,
+        let result2 = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(5, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result2, IoResult::Ok));
         assert_eq!(value, !0);
 
         // Access to the secondary bus (switch internal) should still work for downstream port config
-        let result3 = switch.pci_cfg_read_with_routing(
-            secondary_bus,
-            secondary_bus,
-            0,
-            0x0,
+        let result3 = switch.pci_cfg_type1_read(
+            PciConfigAddress::new(secondary_bus, 0, 0).unwrap(),
             ByteEnabledDwordRead::with_all_bytes_enabled(&mut value),
         );
         assert!(matches!(result3, IoResult::Ok));
@@ -1577,36 +1494,50 @@ mod tests {
             Some(PciConfigSpace::pci_cfg_write(&mut self.0, offset, value))
         }
 
-        fn pci_cfg_read_with_routing(
+        fn pci_cfg_type0_read(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            address: PciConfigAddress,
             value: ByteEnabledDwordRead<'_>,
         ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_read_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
+            Some(PciConfigSpace::pci_cfg_type0_read(
+                &mut self.0,
+                address,
                 value,
             ))
         }
 
-        fn pci_cfg_write_with_routing(
+        fn pci_cfg_type0_write(
             &mut self,
-            secondary_bus: u8,
-            target_bus: u8,
-            function: u8,
-            offset: u16,
+            address: PciConfigAddress,
             value: ByteEnabledDwordWrite,
         ) -> Option<IoResult> {
-            Some(self.0.pci_cfg_write_with_routing(
-                secondary_bus,
-                target_bus,
-                function,
-                offset,
+            Some(PciConfigSpace::pci_cfg_type0_write(
+                &mut self.0,
+                address,
+                value,
+            ))
+        }
+
+        fn pci_cfg_type1_read(
+            &mut self,
+            address: PciConfigAddress,
+            value: ByteEnabledDwordRead<'_>,
+        ) -> Option<IoResult> {
+            Some(PciConfigSpace::pci_cfg_type1_read(
+                &mut self.0,
+                address,
+                value,
+            ))
+        }
+
+        fn pci_cfg_type1_write(
+            &mut self,
+            address: PciConfigAddress,
+            value: ByteEnabledDwordWrite,
+        ) -> Option<IoResult> {
+            Some(PciConfigSpace::pci_cfg_type1_write(
+                &mut self.0,
+                address,
                 value,
             ))
         }
